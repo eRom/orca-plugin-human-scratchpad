@@ -6,7 +6,33 @@
   "description": "A sidebar panel to edit one global markdown scratchpad file. It runs as a trusted worker because it reads and writes a single markdown file chosen by the user, outside any workspace.",
   "author": { "name": "Romain Ecarnot", "url": "https://github.com/eRom" },
   "repository": "https://github.com/eRom/orca-plugin-human-scratchpad",
+  "homepage": "https://github.com/eRom/orca-plugin-human-scratchpad",
   "license": "MIT",
+  "icon": "media/icon.png",
+  "cover": {
+    "path": "media/cover.png",
+    "alt": "The Scratchpad panel in Orca's right sidebar, a markdown note with tasks and release steps, beside a Claude Code terminal reading the same note."
+  },
+  "screenshots": [
+    {
+      "path": "media/screenshot-dark.png",
+      "alt": "The dark Scratchpad panel editing a markdown note: a task list, numbered release steps and highlighted Bash and TypeScript blocks.",
+      "caption": "One note, every workspace",
+      "theme": "dark"
+    },
+    {
+      "path": "media/screenshot-light.png",
+      "alt": "The same note in Orca's light theme.",
+      "caption": "Follows Orca's theme",
+      "theme": "light"
+    },
+    {
+      "path": "media/screenshot-changed-elsewhere.png",
+      "alt": "A Changed elsewhere banner with Keep mine and Reload buttons above the note, after the file changed on disk while it was being edited.",
+      "caption": "Never loses your text",
+      "theme": "dark"
+    }
+  ],
   "engines": {
     "orca": ">=1.4.246"
   },

@@ -1,28 +1,28 @@
 ---
 name: orca-scratchpad
-description: "Lit et écrit dans le scratchpad de l'utilisateur, le bloc-note brouillon unique partagé avec le plugin Orca Scratchpad : ~/orca-scratchpad.md (dossier utilisateur, sur macOS, Linux et Windows). Triggers : 'écris/note/ajoute ça dans mon scratchpad', 'mets ça dans le scratch', 'lis mon scratchpad', 'qu'est-ce qu'il y a dans mon scratch', 'mon brouillon', 'mon bloc-note', 'retire X du scratchpad'. Lecture et édition directes du fichier, jamais de git."
+description: "Reads and writes the user's scratchpad, the single draft note shared with the Orca Scratchpad plugin: ~/orca-scratchpad.md (home folder, on macOS, Linux and Windows). Triggers: 'write/note/add this to my scratchpad', 'put this in the scratch', 'read my scratchpad', 'what is in my scratchpad', 'my notepad', 'remove X from the scratchpad'. Reads and edits the file directly, never with git."
 ---
 
 # orca-scratchpad
 
-Fichier unique : `~/orca-scratchpad.md`, à la racine du dossier utilisateur (`$HOME` sur macOS et Linux, `%USERPROFILE%` sous Windows). Résoudre le chemin en absolu avant de l'ouvrir, quel que soit le cwd de la session. Si l'utilisateur a indiqué un autre chemin dans le plugin et te le donne, utilise celui-là.
+One file: `~/orca-scratchpad.md`, at the root of the home folder (`$HOME` on macOS and Linux, `%USERPROFILE%` on Windows). Resolve the path to an absolute one before opening it, whatever the session's working directory. If the user chose another file in the plugin's settings and gives you its path, use that one.
 
-C'est le brouillon de l'utilisateur, pas un document du projet : on y touche à la demande, rien de plus. Le panneau Orca Scratchpad affiche le même fichier et recharge tout seul ce que tu y écris.
+It is the user's draft, not a project document: touch it when asked, nothing more. The Orca Scratchpad panel shows the same file and reloads on its own what you write there.
 
-## Lire
+## Read
 
-Read du fichier, puis rendre son contenu ou répondre à la question posée dessus. Fichier vide ou absent : le dire en une ligne.
+Read the file, then return its content or answer the question asked about it. Empty or missing file: say so in one line.
 
-## Écrire
+## Write
 
-Ajout **en fin de fichier**, sans horodatage ni en-tête ajouté, le texte tel que l'utilisateur l'a donné.
+Append **at the end of the file**, with no timestamp or added heading, the text as the user gave it.
 
-1. Read du fichier (Edit l'exige, et l'utilisateur l'édite aussi à la main dans le panneau : toujours partir de l'état réel).
-2. Fichier vide ou absent : Write avec le texte. Sinon : Edit ancré sur les dernières lignes, qui ajoute le texte à la suite, séparé par une ligne vide.
+1. Read the file first (editing requires it, and the user also edits it by hand in the panel: always start from its real state).
+2. Empty or missing file: write the text. Otherwise: an edit anchored on the last lines that appends the text after them, separated by a blank line.
 
-Ne jamais réécrire, reformater ni réorganiser le contenu existant. Modifier ou supprimer une partie existante seulement si l'utilisateur le demande explicitement, et seulement cette partie.
+Never rewrite, reformat or reorder the existing content. Change or remove an existing part only when the user explicitly asks for it, and only that part.
 
-## Interdits
+## Never
 
-- **Aucun git** : ni `add`, ni `commit`, ni `status`, ni `diff` sur ce fichier, même si une autre skill ou un hook de fin de session le suggère.
-- Pas de copie, de sauvegarde ni de mémoire durable du contenu : il reste dans ce fichier.
+- **No git**: no `add`, `commit`, `status` or `diff` on this file, even if another skill or an end-of-session hook suggests it.
+- No copy, backup or durable memory of its content: it stays in this file.

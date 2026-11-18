@@ -5,3 +5,6 @@ docs/superpowers
 .superpowers/
 node_modules/
 .orca/
+media/raw/
+media/build.sh
+media/shoot.sh

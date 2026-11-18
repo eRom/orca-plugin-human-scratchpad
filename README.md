@@ -1,10 +1,24 @@
 # Scratchpad
 
-An Orca plugin that adds a right-sidebar panel to edit one global markdown scratchpad: a quick place for notes, snippets and drafts that follows you across every workspace.
+![](media/cover.png)
 
-## Why `trusted-worker`
+An Orca plugin that adds a right-sidebar panel to edit one global markdown scratchpad: a quick place for notes, snippets and drafts that follows you across every workspace. It requires Orca 1.4.246 or later and was tested on macOS with Orca 1.4.262.
 
-The plugin reads and writes a single markdown file that lives outside any workspace, so it needs a worker with file access. It makes no network request and touches no other file.
+## Install
+
+From the command line:
+
+```sh
+orca plugin install eRom/orca-plugin-human-scratchpad
+```
+
+Orca shows the access the plugin asks for (see below) and enables it once you approve. The **Scratchpad** panel then appears in the right sidebar.
+
+## Access requested, and why
+
+- **`trusted-worker`**: the plugin reads and writes a single markdown file that lives outside any workspace, so it needs a worker with file access. It makes no network request and touches no other file.
+- **`settings:own`**: the "Scratchpad file" setting, to use another file than the default one.
+- **`storage:own`**: the panel's own state, in Orca's private storage for the plugin: the cursor and scroll position, and a draft of your text while saving is paused (see [How it behaves](#how-it-behaves)).
 
 ## Where the file lives
 
@@ -28,7 +42,15 @@ By default `~/orca-scratchpad.md` in your home folder (macOS, Linux and Windows)
 
 ## For agents
 
-`skills/orca-scratchpad/SKILL.md` teaches an agent to read and write the same file. Install it by copying it into your agent's skills folder. Orca does not ship plugin skills yet.
+Your agents can use the same file. `skills/orca-scratchpad/SKILL.md` teaches an agent to read it and to append to it, never rewriting what is already there. Install it by copying the `orca-scratchpad` folder into your agent's skills folder, for example `~/.claude/skills/` for Claude Code. Orca does not ship plugin skills yet.
+
+## Uninstall
+
+```sh
+orca plugin uninstall <plugin-key>
+```
+
+The key is the one shown by `orca plugin list`. Uninstalling removes the plugin and its approval. Your scratchpad file is never deleted: it stays where it is.
 
 ## Development
 
