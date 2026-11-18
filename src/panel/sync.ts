@@ -166,7 +166,8 @@ export function createSync(options: SyncOptions): Sync {
     localChange() {
       if (disposed) return
       changes++
-      setState({ status: 'pending' })
+      // Déjà « pending » : rien ne change, et on évite de sérialiser l'état (un conflit y porte tout le texte du disque).
+      if (state.status !== 'pending') setState({ status: 'pending' })
       if (state.conflict) return
       if (inFlight) {
         // L'enregistrement suivant est programmé à la fin du vol ; la rafale démarre maintenant.

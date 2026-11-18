@@ -70,7 +70,8 @@ function markdownDecorations(view: EditorView): DecorationSet {
             found.push(inlineCode.range(node.from, node.to))
             break
           case 'FencedCode':
-            for (let n = doc.lineAt(node.from).number, last = doc.lineAt(node.to).number; n <= last; n++) {
+            // Seules les lignes visibles du bloc : un bloc qui déborde de la vue coûterait sa longueur à chaque frappe.
+            for (let n = doc.lineAt(Math.max(node.from, from)).number, last = doc.lineAt(Math.min(node.to, to)).number; n <= last; n++) {
               found.push(fenceLine.range(doc.line(n).from))
             }
             break

@@ -26546,7 +26546,8 @@ function createSync(options) {
       if (disposed)
         return;
       changes++;
-      setState({ status: "pending" });
+      if (state.status !== "pending")
+        setState({ status: "pending" });
       if (state.conflict)
         return;
       if (inFlight) {
@@ -26701,7 +26702,7 @@ function markdownDecorations(view) {
             found.push(inlineCode.range(node.from, node.to));
             break;
           case "FencedCode":
-            for (let n = doc2.lineAt(node.from).number, last2 = doc2.lineAt(node.to).number;n <= last2; n++) {
+            for (let n = doc2.lineAt(Math.max(node.from, from)).number, last2 = doc2.lineAt(Math.min(node.to, to)).number;n <= last2; n++) {
               found.push(fenceLine.range(doc2.line(n).from));
             }
             break;
@@ -27243,5 +27244,5 @@ orca.settings.onDidChange(({ key }) => {
 });
 switchFile().then(nextFrames).finally(() => chrome2.reveal());
 
-//# debugId=A6C59CFD9CF82AC764756E2164756E21
+//# debugId=EFF8A86496FA92AB64756E2164756E21
 //# sourceMappingURL=panel.js.map
