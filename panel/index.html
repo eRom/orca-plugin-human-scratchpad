@@ -2,7 +2,44 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Scratchpad</title>
+    <link rel="stylesheet" href="style.css" />
   </head>
-  <body></body>
+  <body class="booting">
+    <div id="app" data-mode="editor">
+      <header class="header">
+        <span class="title">Scratchpad</span>
+        <span id="path" class="path"></span>
+      </header>
+      <div id="toolbar" class="toolbar-slot"></div>
+      <div id="conflict-banner" class="banner banner-conflict" role="alert" hidden>
+        <span class="banner-text">Changed elsewhere</span>
+        <span class="banner-actions">
+          <button id="keep-mine" type="button">Keep mine</button>
+          <button id="reload" type="button">Reload</button>
+        </span>
+      </div>
+      <div id="full-banner" class="banner banner-full" role="alert" hidden>
+        <span id="full-text" class="banner-text"></span>
+      </div>
+      <div id="switch-banner" class="banner banner-switch" role="status" hidden>
+        <span class="banner-text">File setting changed: resolve the issue above to open the new file</span>
+      </div>
+      <main id="editor" class="editor"></main>
+      <section class="blocking" aria-live="polite">
+        <p id="blocking-message" class="blocking-message"></p>
+        <p class="blocking-hint">Change the file in Settings → Scratchpad</p>
+      </section>
+      <footer class="footer">
+        <span class="status">
+          <span id="status-dot" class="dot" data-state="saved"></span>
+          <span id="status-label" class="status-label">Saved</span>
+          <button id="retry" type="button" hidden>Retry</button>
+        </span>
+        <span id="size" class="size"></span>
+      </footer>
+    </div>
+    <script type="module" src="../dist/panel.js"></script>
+  </body>
 </html>
