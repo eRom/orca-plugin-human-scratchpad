@@ -5,9 +5,11 @@ import type { FileErrorCode, ReadOutput, ResolveOutput } from '../protocol'
 import { createChrome } from './chrome'
 import { createEditor, type ScratchpadEditor, type ViewState } from './editor'
 import { frameFileApi } from './file-api'
+import { applyFormat, formatRange } from './format-commands'
 import { blockingErrorStyle, switchBlock } from './switch-guard'
 import { createSync, type Sync, type SyncState, type Timers } from './sync'
 import { scratchpadTheme } from './theme'
+import { renderToolbar } from './toolbar'
 import { flushViewState, loadViewState, saveViewState } from './view-state'
 
 type ResolvedFile = Extract<ResolveOutput, { status: 'ok' }>
@@ -52,7 +54,16 @@ const chrome = createChrome(document, {
   onBlockingRetry: () => run(switchFile),
 })
 
-const isDirty = (): boolean => (editor?.getText() ?? '') !== cleanText
+// Barre d'outils : chaque commande s'applique à la sélection principale, en une seule transaction annulable.
+renderToolbar(chrome.toolbarHost, (command) => {
+  if (!editor) return
+  const { anchor, head } = editor.getViewState()
+  const text = editor.getText()
+  const { from, to } = formatRange(text, anchor, head)
+  editor.applyFormatResult(applyFormat(command, text, from, to))
+})
+
+const isDirty =(): boolean => (editor?.getText() ?? '') !== cleanText
 const currentBlock = (state: SyncState) => switchBlock(state, isDirty())
 
 // La taille affichée suit le texte, y compris après une frappe ou un ajout externe.

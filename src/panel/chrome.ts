@@ -54,6 +54,8 @@ export type ChromeHandlers = { onKeepMine(): void; onReload(): void; onRetry(): 
 export type Chrome = {
   /** Conteneur où l'éditeur se monte. */
   editorHost: HTMLElement
+  /** Emplacement de la barre d'outils markdown. */
+  toolbarHost: HTMLElement
   setPath(displayPath: string): void
   render(state: SyncState, info: { isDefault: boolean }): void
   setSize(bytes: number): void
@@ -98,6 +100,7 @@ export function createChrome(doc: Document, handlers: ChromeHandlers): Chrome {
 
   return {
     editorHost: byId(doc, 'editor'),
+    toolbarHost: byId(doc, 'toolbar'),
 
     setPath(displayPath) {
       pathLabel.textContent = displayPath

@@ -72,6 +72,7 @@ function createChrome(doc, handlers) {
   blockingRetry.addEventListener("click", () => handlers.onBlockingRetry());
   return {
     editorHost: byId(doc, "editor"),
+    toolbarHost: byId(doc, "toolbar"),
     setPath(displayPath) {
       pathLabel.textContent = displayPath;
       pathLabel.title = displayPath;
@@ -26129,6 +26130,7 @@ function createEditor(parent, opts) {
         scrollIntoView: true,
         userEvent: "input.format"
       });
+      view.focus();
     },
     getViewState() {
       const { anchor, head } = view.state.selection.main;
@@ -26199,6 +26201,223 @@ function frameFileApi(orca2) {
     read: (path) => guarded(() => orca2.plugin.request("scratchpad.read", { path })),
     write: (input) => guarded(() => orca2.plugin.request("scratchpad.write", input))
   };
+}
+
+// src/panel/format-commands.ts
+var HEADING_RE = /^(#{1,6}) /;
+var TASK_RE = /^(\s*)[-*+] \[[ xX]\] /;
+var BULLET_RE = /^(\s*)[-*+] /;
+var ORDERED_RE = /^(\s*)\d+[.)] /;
+var QUOTE_RE = /^> ?/;
+function parseLine(line) {
+  let m = HEADING_RE.exec(line);
+  if (m)
+    return { kind: "heading", level: m[1].length, indent: "", marker: m[0] };
+  m = TASK_RE.exec(line);
+  if (m)
+    return { kind: "task", level: 0, indent: m[1], marker: m[0].slice(m[1].length) };
+  m = BULLET_RE.exec(line);
+  if (m)
+    return { kind: "bullet", level: 0, indent: m[1], marker: m[0].slice(m[1].length) };
+  m = ORDERED_RE.exec(line);
+  if (m)
+    return { kind: "ordered", level: 0, indent: m[1], marker: m[0].slice(m[1].length) };
+  m = QUOTE_RE.exec(line);
+  if (m)
+    return { kind: "quote", level: 0, indent: "", marker: m[0] };
+  return { kind: "none", level: 0, indent: "", marker: "" };
+}
+var isList2 = (kind) => kind === "task" || kind === "bullet" || kind === "ordered";
+var HEADING_LEVELS = { heading1: 1, heading2: 2, heading3: 3 };
+function belongsToFamily(command2, kind) {
+  switch (command2) {
+    case "heading1":
+    case "heading2":
+    case "heading3":
+      return kind === "heading";
+    case "quote":
+      return kind === "quote";
+    default:
+      return isList2(kind);
+  }
+}
+function hasCommandMarker(command2, parsed) {
+  switch (command2) {
+    case "heading1":
+    case "heading2":
+    case "heading3":
+      return parsed.kind === "heading" && parsed.level === HEADING_LEVELS[command2];
+    case "bulletList":
+      return parsed.kind === "bullet";
+    case "orderedList":
+      return parsed.kind === "ordered";
+    case "taskList":
+      return parsed.kind === "task";
+    case "quote":
+      return parsed.kind === "quote";
+    default:
+      return false;
+  }
+}
+function newMarker(command2, ordinal) {
+  switch (command2) {
+    case "heading1":
+      return "# ";
+    case "heading2":
+      return "## ";
+    case "heading3":
+      return "### ";
+    case "bulletList":
+      return "- ";
+    case "orderedList":
+      return `${ordinal}. `;
+    case "taskList":
+      return "- [ ] ";
+    case "quote":
+      return "> ";
+    default:
+      return "";
+  }
+}
+function applyLineCommand(command2, doc2, from, to) {
+  const lines = doc2.split(`
+`);
+  const starts = [];
+  let offset = 0;
+  for (const line of lines) {
+    starts.push(offset);
+    offset += line.length + 1;
+  }
+  const lineOf = (pos) => {
+    let index = 0;
+    while (index + 1 < lines.length && starts[index + 1] <= pos)
+      index++;
+    return index;
+  };
+  const first = lineOf(from);
+  const last2 = lineOf(to);
+  const targeted = new Set;
+  for (let i2 = first;i2 <= last2; i2++) {
+    if (first === last2 || lines[i2].trim() !== "")
+      targeted.add(i2);
+  }
+  const parsed = lines.map(parseLine);
+  const toggleOff = command2 !== "paragraph" && [...targeted].every((i2) => hasCommandMarker(command2, parsed[i2]));
+  const edits = [];
+  let ordinal = 0;
+  for (let i2 = 0;i2 < lines.length; i2++) {
+    const line = lines[i2];
+    if (!targeted.has(i2)) {
+      edits.push({ start: starts[i2], text: line, prefixBefore: 0, prefixAfter: 0 });
+      continue;
+    }
+    const p = parsed[i2];
+    let indent2;
+    let oldMarker;
+    let replacement;
+    if (command2 === "paragraph") {
+      indent2 = p.indent;
+      oldMarker = p.marker;
+      replacement = "";
+    } else {
+      if (belongsToFamily(command2, p.kind)) {
+        indent2 = p.indent;
+        oldMarker = p.marker;
+      } else {
+        indent2 = isList2(commandKind(command2)) ? /^\s*/.exec(line)[0] : "";
+        oldMarker = "";
+      }
+      ordinal++;
+      replacement = toggleOff ? "" : newMarker(command2, ordinal);
+    }
+    const rest = line.slice(indent2.length + oldMarker.length);
+    edits.push({
+      start: starts[i2],
+      text: indent2 + replacement + rest,
+      prefixBefore: indent2.length + oldMarker.length,
+      prefixAfter: indent2.length + replacement.length
+    });
+  }
+  const newStarts = [];
+  let cursor = 0;
+  for (const edit of edits) {
+    newStarts.push(cursor);
+    cursor += edit.text.length + 1;
+  }
+  const mapPosition = (pos) => {
+    const i2 = lineOf(pos);
+    const { prefixBefore: r, prefixAfter: a } = edits[i2];
+    const o = pos - starts[i2];
+    return o < r ? newStarts[i2] + a : newStarts[i2] + o - r + a;
+  };
+  return {
+    text: edits.map((edit) => edit.text).join(`
+`),
+    from: mapPosition(from),
+    to: mapPosition(to)
+  };
+}
+function commandKind(command2) {
+  if (command2 === "bulletList")
+    return "bullet";
+  if (command2 === "orderedList")
+    return "ordered";
+  if (command2 === "taskList")
+    return "task";
+  return "none";
+}
+var INLINE_MARKERS = { bold: "**", italic: "*", strike: "~~" };
+function applyInlineCommand(marker, doc2, from, to) {
+  const n = marker.length;
+  const selected = doc2.slice(from, to);
+  if (from >= n && doc2.slice(from - n, from) === marker && doc2.slice(to, to + n) === marker) {
+    return {
+      text: doc2.slice(0, from - n) + selected + doc2.slice(to + n),
+      from: from - n,
+      to: to - n
+    };
+  }
+  if (selected.length >= 2 * n && selected.startsWith(marker) && selected.endsWith(marker)) {
+    const inner = selected.slice(n, selected.length - n);
+    return {
+      text: doc2.slice(0, from) + inner + doc2.slice(to),
+      from,
+      to: from + inner.length
+    };
+  }
+  return {
+    text: doc2.slice(0, from) + marker + selected + marker + doc2.slice(to),
+    from: from + n,
+    to: to + n
+  };
+}
+function applyLink(doc2, from, to) {
+  const selected = doc2.slice(from, to);
+  const text = `${doc2.slice(0, from)}[${selected}](url)${doc2.slice(to)}`;
+  if (selected === "")
+    return { text, from: from + 1, to: from + 1 };
+  const urlStart = from + 1 + selected.length + 2;
+  return { text, from: urlStart, to: urlStart + 3 };
+}
+function applyFormat(command2, doc2, from, to) {
+  switch (command2) {
+    case "bold":
+    case "italic":
+    case "strike":
+      return applyInlineCommand(INLINE_MARKERS[command2], doc2, from, to);
+    case "link":
+      return applyLink(doc2, from, to);
+    default:
+      return applyLineCommand(command2, doc2, from, to);
+  }
+}
+function formatRange(doc2, anchor, head) {
+  const from = Math.min(anchor, head);
+  let to = Math.max(anchor, head);
+  if (to > from && doc2[to - 1] === `
+`)
+    to -= 1;
+  return { from, to };
 }
 
 // src/panel/switch-guard.ts
@@ -26523,6 +26742,237 @@ var editorTheme = EditorView.theme({
 });
 var scratchpadTheme = [editorTheme, syntaxHighlighting(highlightStyle), decorations2];
 
+// node_modules/lucide/dist/esm/defaultAttributes.mjs
+var defaultAttributes = {
+  xmlns: "http://www.w3.org/2000/svg",
+  width: 24,
+  height: 24,
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: "currentColor",
+  "stroke-width": 2,
+  "stroke-linecap": "round",
+  "stroke-linejoin": "round"
+};
+
+// node_modules/lucide/dist/esm/createElement.mjs
+var createSVGElement = ([tag, attrs, children]) => {
+  const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  Object.keys(attrs).forEach((name2) => {
+    element.setAttribute(name2, String(attrs[name2]));
+  });
+  if (children?.length) {
+    children.forEach((child) => {
+      const childElement = createSVGElement(child);
+      element.appendChild(childElement);
+    });
+  }
+  return element;
+};
+var createElement = (iconNode, customAttrs = {}) => {
+  const tag = "svg";
+  const attrs = {
+    ...defaultAttributes,
+    ...customAttrs
+  };
+  return createSVGElement([tag, attrs, iconNode]);
+};
+
+// node_modules/lucide/dist/esm/icons/heading-1.mjs
+var Heading1 = [
+  ["path", { d: "M4 12h8" }],
+  ["path", { d: "M4 18V6" }],
+  ["path", { d: "M12 18V6" }],
+  ["path", { d: "m17 12 3-2v8" }]
+];
+
+// node_modules/lucide/dist/esm/icons/heading-2.mjs
+var Heading2 = [
+  ["path", { d: "M4 12h8" }],
+  ["path", { d: "M4 18V6" }],
+  ["path", { d: "M12 18V6" }],
+  ["path", { d: "M21 18h-4c0-4 4-3 4-6 0-1.5-2-2.5-4-1" }]
+];
+
+// node_modules/lucide/dist/esm/icons/heading-3.mjs
+var Heading3 = [
+  ["path", { d: "M4 12h8" }],
+  ["path", { d: "M4 18V6" }],
+  ["path", { d: "M12 18V6" }],
+  ["path", { d: "M17.5 10.5c1.7-1 3.5 0 3.5 1.5a2 2 0 0 1-2 2" }],
+  ["path", { d: "M17 17.5c2 1.5 4 .3 4-1.5a2 2 0 0 0-2-2" }]
+];
+
+// node_modules/lucide/dist/esm/icons/link.mjs
+var Link = [
+  ["path", { d: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" }],
+  ["path", { d: "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" }]
+];
+
+// node_modules/lucide/dist/esm/icons/list-ordered.mjs
+var ListOrdered = [
+  ["path", { d: "M11 5h10" }],
+  ["path", { d: "M11 12h10" }],
+  ["path", { d: "M11 19h10" }],
+  ["path", { d: "M4 4h1v5" }],
+  ["path", { d: "M4 9h2" }],
+  ["path", { d: "M6.5 20H3.4c0-1 2.6-1.925 2.6-3.5a1.5 1.5 0 0 0-2.6-1.02" }]
+];
+
+// node_modules/lucide/dist/esm/icons/list-todo.mjs
+var ListTodo = [
+  ["path", { d: "M13 5h8" }],
+  ["path", { d: "M13 12h8" }],
+  ["path", { d: "M13 19h8" }],
+  ["path", { d: "m3 17 2 2 4-4" }],
+  ["rect", { x: "3", y: "4", width: "6", height: "6", rx: "1" }]
+];
+
+// node_modules/lucide/dist/esm/icons/list.mjs
+var List = [
+  ["path", { d: "M3 5h.01" }],
+  ["path", { d: "M3 12h.01" }],
+  ["path", { d: "M3 19h.01" }],
+  ["path", { d: "M8 5h13" }],
+  ["path", { d: "M8 12h13" }],
+  ["path", { d: "M8 19h13" }]
+];
+
+// node_modules/lucide/dist/esm/icons/pilcrow.mjs
+var Pilcrow = [
+  ["path", { d: "M13 4v16" }],
+  ["path", { d: "M17 4v16" }],
+  ["path", { d: "M19 4H9.5a4.5 4.5 0 0 0 0 9H13" }]
+];
+
+// node_modules/lucide/dist/esm/icons/quote.mjs
+var Quote2 = [
+  [
+    "path",
+    {
+      d: "M16 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z"
+    }
+  ],
+  [
+    "path",
+    {
+      d: "M5 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z"
+    }
+  ]
+];
+// src/panel/toolbar.ts
+var ICON_SIZE = 14;
+var TOOLTIP_DELAY_MS = 600;
+var TOOLTIP_GAP = 4;
+var GROUPS = [
+  [
+    { command: "paragraph", label: "Body text", icon: Pilcrow },
+    { command: "heading1", label: "Heading 1", icon: Heading1 },
+    { command: "heading2", label: "Heading 2", icon: Heading2 },
+    { command: "heading3", label: "Heading 3", icon: Heading3 }
+  ],
+  [
+    { command: "bold", label: "Bold", glyph: "B" },
+    { command: "italic", label: "Italic", glyph: "I" },
+    { command: "strike", label: "Strike", glyph: "S" }
+  ],
+  [
+    { command: "bulletList", label: "Bullet list", icon: List },
+    { command: "orderedList", label: "Numbered list", icon: ListOrdered },
+    { command: "taskList", label: "Checklist", icon: ListTodo }
+  ],
+  [
+    { command: "quote", label: "Quote", icon: Quote2 },
+    { command: "link", label: "Link", icon: Link }
+  ]
+];
+function createTooltip(doc2) {
+  const tip = doc2.createElement("div");
+  tip.className = "toolbar-tooltip";
+  tip.setAttribute("role", "tooltip");
+  tip.hidden = true;
+  const arrow = doc2.createElement("span");
+  arrow.className = "toolbar-tooltip-arrow";
+  const text = doc2.createElement("span");
+  tip.append(text, arrow);
+  doc2.body.append(tip);
+  let timer = 0;
+  const hide = () => {
+    window.clearTimeout(timer);
+    tip.hidden = true;
+  };
+  const place = (button) => {
+    text.textContent = button.getAttribute("aria-label") ?? "";
+    tip.hidden = false;
+    const rect = button.getBoundingClientRect();
+    const width = tip.offsetWidth;
+    const margin = 4;
+    const center = rect.left + rect.width / 2;
+    const left = Math.min(Math.max(center - width / 2, margin), Math.max(margin, window.innerWidth - width - margin));
+    tip.style.left = `${left}px`;
+    tip.style.top = `${rect.bottom + TOOLTIP_GAP}px`;
+    arrow.style.left = `${center - left}px`;
+  };
+  return {
+    show(button) {
+      hide();
+      timer = window.setTimeout(() => place(button), TOOLTIP_DELAY_MS);
+    },
+    hide
+  };
+}
+function createButton(doc2, item, tooltip, onCommand) {
+  const button = doc2.createElement("button");
+  button.type = "button";
+  button.className = "toolbar-button";
+  button.setAttribute("aria-label", item.label);
+  if (item.icon)
+    button.append(createElement(item.icon, { width: ICON_SIZE, height: ICON_SIZE }));
+  else
+    button.textContent = item.glyph ?? "";
+  button.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+    tooltip.hide();
+  });
+  button.addEventListener("click", () => onCommand(item.command));
+  button.addEventListener("mouseenter", () => tooltip.show(button));
+  button.addEventListener("mouseleave", tooltip.hide);
+  button.addEventListener("focus", () => button.matches(":focus-visible") && tooltip.show(button));
+  button.addEventListener("blur", tooltip.hide);
+  return button;
+}
+function renderToolbar(parent, onCommand) {
+  const doc2 = parent.ownerDocument;
+  const tooltip = createTooltip(doc2);
+  const row = doc2.createElement("div");
+  row.className = "toolbar";
+  row.setAttribute("role", "toolbar");
+  row.setAttribute("aria-label", "Markdown formatting");
+  const groups = GROUPS.map((items, index) => {
+    const group = doc2.createElement("div");
+    group.className = "toolbar-group";
+    if (index > 0) {
+      const separator = doc2.createElement("div");
+      separator.className = "toolbar-separator";
+      group.append(separator);
+    }
+    for (const item of items)
+      group.append(createButton(doc2, item, tooltip, onCommand));
+    return group;
+  });
+  row.append(...groups);
+  parent.replaceChildren(row);
+  const markWrapped = () => {
+    groups.forEach((group, index) => {
+      if (index > 0)
+        group.toggleAttribute("data-wrapped", group.offsetTop > groups[index - 1].offsetTop);
+    });
+  };
+  if (typeof ResizeObserver !== "undefined")
+    new ResizeObserver(markWrapped).observe(row);
+  markWrapped();
+}
+
 // src/panel/view-state.ts
 var STORAGE_KEY = "viewState";
 var WRITE_DEBOUNCE_MS = 500;
@@ -26620,6 +27070,14 @@ var chrome2 = createChrome(document, {
     await session?.sync.poll();
   }),
   onBlockingRetry: () => run(switchFile)
+});
+renderToolbar(chrome2.toolbarHost, (command2) => {
+  if (!editor)
+    return;
+  const { anchor, head } = editor.getViewState();
+  const text = editor.getText();
+  const { from, to } = formatRange(text, anchor, head);
+  editor.applyFormatResult(applyFormat(command2, text, from, to));
 });
 var isDirty = () => (editor?.getText() ?? "") !== cleanText;
 var currentBlock = (state) => switchBlock(state, isDirty());
@@ -26785,5 +27243,5 @@ orca.settings.onDidChange(({ key }) => {
 });
 switchFile().then(nextFrames).finally(() => chrome2.reveal());
 
-//# debugId=7DB45C79832BD7D664756E2164756E21
+//# debugId=A6C59CFD9CF82AC764756E2164756E21
 //# sourceMappingURL=panel.js.map

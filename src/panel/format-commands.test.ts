@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { applyFormat, type FormatCommand } from './format-commands'
+import { applyFormat, formatRange, type FormatCommand } from './format-commands'
 
 const CASES: [FormatCommand, string, number, number, string, number, number][] = [
   ['heading1', 'Title', 0, 0, '# Title', 2, 2],
@@ -33,3 +33,20 @@ for (const [command, doc, from, to, text, efrom, eto] of CASES) {
     assert.deepEqual(applyFormat(command, doc, from, to), { text, from: efrom, to: eto })
   })
 }
+
+test('a selection ending right after a newline does not reach the next line', () => {
+  assert.deepEqual(formatRange('a\nb\nc', 0, 4), { from: 0, to: 3 })
+  assert.deepEqual(formatRange('a\nb', 0, 2), { from: 0, to: 1 })
+})
+
+test('formatRange orders anchor and head and leaves other selections alone', () => {
+  assert.deepEqual(formatRange('hello world', 8, 2), { from: 2, to: 8 })
+  assert.deepEqual(formatRange('a\nb', 2, 2), { from: 2, to: 2 })
+  assert.deepEqual(formatRange('a\nb', 0, 3), { from: 0, to: 3 })
+})
+
+test('a line command on a selection that ended after a newline formats only the selected lines', () => {
+  const doc = 'one\ntwo\nthree'
+  const { from, to } = formatRange(doc, 0, 8)
+  assert.equal(applyFormat('bulletList', doc, from, to).text, '- one\n- two\nthree')
+})

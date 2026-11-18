@@ -147,6 +147,8 @@ export function createEditor(parent: HTMLElement, opts: EditorOptions): Scratchp
         scrollIntoView: true,
         userEvent: 'input.format',
       })
+      // La barre d'outils ne vole pas le focus au clic, mais un bouton activé au clavier le garde : on le rend.
+      view.focus()
     },
 
     getViewState() {

@@ -229,3 +229,15 @@ export function applyFormat(command: FormatCommand, doc: string, from: number, t
       return applyLineCommand(command, doc, from, to)
   }
 }
+
+/**
+ * Bornes à passer à `applyFormat` pour une sélection (ancre et tête dans n'importe quel ordre).
+ * Une sélection non vide qui finit juste après un saut de ligne (triple-clic, sélection de lignes entières)
+ * ne doit pas formater la ligne suivante, que l'utilisateur n'a pas touchée : on recule `to` d'un caractère.
+ */
+export function formatRange(doc: string, anchor: number, head: number): { from: number; to: number } {
+  const from = Math.min(anchor, head)
+  let to = Math.max(anchor, head)
+  if (to > from && doc[to - 1] === '\n') to -= 1
+  return { from, to }
+}
