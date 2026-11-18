@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { describeFooter, formatBytes, fullBannerText } from './chrome'
+import { describeFooter, formatBytes, fullBannerText, switchBlockMessage } from './chrome'
 import type { SyncState } from './sync'
 
 const idle: SyncState = { status: 'saved', conflict: null, full: null, missing: false, error: null }
@@ -34,4 +34,9 @@ test('formatBytes never rounds a size above the limit down to it', () => {
 
 test('the full banner states the size and the limit', () => {
   assert.equal(fullBannerText(52_000), 'Scratchpad full (52 KB / 50 KB): delete some text to resume saving')
+})
+
+test('each switch block has its own explanation', () => {
+  assert.equal(switchBlockMessage('error'), "Can't switch files: unsaved changes could not be saved")
+  assert.notEqual(switchBlockMessage('conflict'), switchBlockMessage('full'))
 })

@@ -35,6 +35,16 @@ function describeFooter(state, isDefault) {
       return { dot: "saved", label: "Saved", retry: false };
   }
 }
+function switchBlockMessage(block) {
+  switch (block) {
+    case "conflict":
+      return "File setting changed: resolve the conflict above to open the new file";
+    case "full":
+      return "File setting changed: delete some text to open the new file";
+    case "error":
+      return "Can't switch files: unsaved changes could not be saved";
+  }
+}
 function byId(doc, id) {
   const element = doc.getElementById(id);
   if (!element)
@@ -48,6 +58,9 @@ function createChrome(doc, handlers) {
   const fullBanner = byId(doc, "full-banner");
   const fullText = byId(doc, "full-text");
   const switchBanner = byId(doc, "switch-banner");
+  const switchText = byId(doc, "switch-text");
+  const blockingHint = byId(doc, "blocking-hint");
+  const blockingRetry = byId(doc, "blocking-retry");
   const blockingMessage = byId(doc, "blocking-message");
   const dot = byId(doc, "status-dot");
   const statusLabel = byId(doc, "status-label");
@@ -56,6 +69,7 @@ function createChrome(doc, handlers) {
   byId(doc, "keep-mine").addEventListener("click", () => handlers.onKeepMine());
   byId(doc, "reload").addEventListener("click", () => handlers.onReload());
   retryButton.addEventListener("click", () => handlers.onRetry());
+  blockingRetry.addEventListener("click", () => handlers.onBlockingRetry());
   return {
     editorHost: byId(doc, "editor"),
     setPath(displayPath) {
@@ -78,14 +92,18 @@ function createChrome(doc, handlers) {
       if (bytes !== null)
         fullText.textContent = fullBannerText(bytes);
     },
-    setSwitchPending(pending) {
-      switchBanner.hidden = !pending;
+    setSwitchPending(block) {
+      switchBanner.hidden = block === null;
+      if (block !== null)
+        switchText.textContent = switchBlockMessage(block);
     },
     showEditor() {
       app.dataset.mode = "editor";
     },
-    showBlockingError(message) {
+    showBlockingError(message, style) {
       blockingMessage.textContent = message;
+      blockingHint.hidden = !style.hint;
+      blockingRetry.hidden = !style.retry;
       app.dataset.mode = "error";
       switchBanner.hidden = true;
     },
@@ -23875,6 +23893,22 @@ function frameFileApi(orca2) {
   };
 }
 
+// src/panel/switch-guard.ts
+function switchBlock(state, dirty) {
+  if (state.conflict)
+    return "conflict";
+  if (state.full)
+    return "full";
+  if (state.status === "error" && dirty)
+    return "error";
+  return null;
+}
+function blockingErrorStyle(code2) {
+  if (code2 === "invalid_path" || code2 === "not_found" || code2 === "too_large")
+    return { hint: true, retry: false };
+  return { hint: false, retry: true };
+}
+
 // src/panel/sync.ts
 function createSync(options) {
   const { api, path, getText, applyExternal, onState, timers, debounceMs, maxWaitMs } = options;
@@ -24169,6 +24203,7 @@ var session = null;
 var switching = false;
 var switchAgain = false;
 var switchBlocked = false;
+var cleanText = "";
 function run(task) {
   (async () => task())().catch((error) => console.error("scratchpad: unexpected error", error));
 }
@@ -24178,8 +24213,11 @@ var chrome2 = createChrome(document, {
   onRetry: () => run(async () => {
     await session?.sync.flush();
     await session?.sync.poll();
-  })
+  }),
+  onBlockingRetry: () => run(switchFile)
 });
+var isDirty = () => (editor?.getText() ?? "") !== cleanText;
+var currentBlock = (state) => switchBlock(state, isDirty());
 var sizeFrame = 0;
 function refreshSize() {
   if (sizeFrame || !editor)
@@ -24193,9 +24231,9 @@ function refreshSize() {
     chrome2.setFull(bytes > SCRATCHPAD_MAX_BYTES ? bytes : null);
   });
 }
-function showBlockingError(message, displayPath = "") {
+function showBlockingError(message, displayPath, code2) {
   chrome2.setPath(displayPath);
-  chrome2.showBlockingError(message);
+  chrome2.showBlockingError(message, blockingErrorStyle(code2));
 }
 function nextFrames() {
   return new Promise((done) => {
@@ -24217,14 +24255,22 @@ function mountSession(resolved, read) {
       getText: () => editor?.getText() ?? "",
       applyExternal: (text) => {
         editor?.applyExternal(text);
+        cleanText = text;
         refreshSize();
       },
       onState: (state) => {
         if (session !== current)
           return;
+        if (state.status === "saved")
+          cleanText = editor?.getText() ?? "";
         chrome2.render(state, { isDefault: current.isDefault });
-        if (switchBlocked && canSwitch(state))
-          run(switchFile);
+        if (switchBlocked) {
+          const block = currentBlock(state);
+          if (block === null)
+            run(switchFile);
+          else
+            chrome2.setSwitchPending(block);
+        }
       },
       timers,
       debounceMs: SAVE_DEBOUNCE_MS,
@@ -24232,12 +24278,12 @@ function mountSession(resolved, read) {
     })
   };
   session = current;
+  cleanText = read.content;
   chrome2.setPath(resolved.displayPath);
   chrome2.showEditor();
   chrome2.render(current.sync.state, { isDefault: current.isDefault });
   refreshSize();
 }
-var canSwitch = (state) => state.conflict === null && state.full === null;
 var viewSampleTimer = 0;
 function scheduleViewSample() {
   if (viewSampleTimer)
@@ -24259,24 +24305,11 @@ function createPanelEditor(doc2) {
     onViewChange: scheduleViewSample
   });
 }
-async function start() {
-  const resolved = await api.resolve();
-  if (resolved.status === "error")
-    return showBlockingError(resolved.message);
-  const read = await api.read(resolved.path);
-  if (read.status === "error")
-    return showBlockingError(read.message, resolved.displayPath);
-  const viewState = await loadViewState(resolved.path) ?? EMPTY_VIEW;
-  editor = createPanelEditor(read.content);
-  editor.restoreViewState(viewState);
-  mountSession(resolved, read);
-  await nextFrames();
-}
 async function switchOnce() {
   const resolved = await api.resolve();
   if (resolved.status === "ok" && session && resolved.path === session.path) {
     switchBlocked = false;
-    chrome2.setSwitchPending(false);
+    chrome2.setSwitchPending(null);
     chrome2.setPath(resolved.displayPath);
     return;
   }
@@ -24284,14 +24317,15 @@ async function switchOnce() {
   const viewState = resolved.status === "ok" && read?.status === "ok" ? await loadViewState(resolved.path) ?? EMPTY_VIEW : EMPTY_VIEW;
   if (session) {
     await session.sync.flush();
-    if (!canSwitch(session.sync.state)) {
+    const block = currentBlock(session.sync.state);
+    if (block !== null) {
       switchBlocked = true;
-      chrome2.setSwitchPending(true);
+      chrome2.setSwitchPending(block);
       return;
     }
   }
   switchBlocked = false;
-  chrome2.setSwitchPending(false);
+  chrome2.setSwitchPending(null);
   const closing = session;
   if (closing && editor)
     saveViewState(closing.path, editor.getViewState());
@@ -24299,9 +24333,9 @@ async function switchOnce() {
   closing?.sync.dispose();
   flushViewState();
   if (resolved.status === "error")
-    return showBlockingError(resolved.message);
+    return showBlockingError(resolved.message, "", resolved.code);
   if (read?.status === "error")
-    return showBlockingError(read.message, resolved.displayPath);
+    return showBlockingError(read.message, resolved.displayPath, read.code);
   if (read === null)
     return;
   if (editor)
@@ -24322,6 +24356,10 @@ async function switchFile() {
       switchAgain = false;
       await switchOnce();
     } while (switchAgain);
+  } catch (error) {
+    console.error("scratchpad: file switch failed", error);
+    if (!session)
+      showBlockingError(error instanceof Error ? error.message : String(error), "", "io_error");
   } finally {
     switching = false;
   }
@@ -24340,7 +24378,7 @@ orca.settings.onDidChange(({ key }) => {
   if (key === "filePath")
     run(switchFile);
 });
-start().catch((error) => showBlockingError(error instanceof Error ? error.message : String(error))).finally(() => chrome2.reveal());
+switchFile().then(nextFrames).finally(() => chrome2.reveal());
 
-//# debugId=C24D8C635B0EA64164756E2164756E21
+//# debugId=8287724CA03C6A7064756E2164756E21
 //# sourceMappingURL=panel.js.map

@@ -24,12 +24,13 @@
         <span id="full-text" class="banner-text"></span>
       </div>
       <div id="switch-banner" class="banner banner-switch" role="status" hidden>
-        <span class="banner-text">File setting changed: resolve the issue above to open the new file</span>
+        <span id="switch-text" class="banner-text"></span>
       </div>
       <main id="editor" class="editor"></main>
       <section class="blocking" aria-live="polite">
         <p id="blocking-message" class="blocking-message"></p>
-        <p class="blocking-hint">Change the file in Settings → Scratchpad</p>
+        <p id="blocking-hint" class="blocking-hint">Change the file in Settings → Scratchpad</p>
+        <button id="blocking-retry" type="button" hidden>Retry</button>
       </section>
       <footer class="footer">
         <span class="status">

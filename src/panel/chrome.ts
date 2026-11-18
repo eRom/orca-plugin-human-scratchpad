@@ -2,6 +2,7 @@
 // La structure HTML est dans `panel/index.html` ; ce module ne fait que la piloter.
 
 import { SCRATCHPAD_MAX_BYTES } from '../shared/limits'
+import type { BlockingErrorStyle, SwitchBlock } from './switch-guard'
 import type { SyncState } from './sync'
 
 export type FooterDot = 'saved' | 'pending' | 'saving' | 'error' | 'missing'
@@ -36,7 +37,19 @@ export function describeFooter(state: SyncState, isDefault: boolean): FooterInfo
   }
 }
 
-export type ChromeHandlers = { onKeepMine(): void; onReload(): void; onRetry(): void }
+/** Texte du bandeau qui explique pourquoi le changement de fichier attend. */
+export function switchBlockMessage(block: SwitchBlock): string {
+  switch (block) {
+    case 'conflict':
+      return 'File setting changed: resolve the conflict above to open the new file'
+    case 'full':
+      return 'File setting changed: delete some text to open the new file'
+    case 'error':
+      return "Can't switch files: unsaved changes could not be saved"
+  }
+}
+
+export type ChromeHandlers = { onKeepMine(): void; onReload(): void; onRetry(): void; onBlockingRetry(): void }
 
 export type Chrome = {
   /** Conteneur où l'éditeur se monte. */
@@ -46,12 +59,12 @@ export type Chrome = {
   setSize(bytes: number): void
   /** Bandeau « plein » : affiché tant que le texte dépasse le plafond, y compris à l'ouverture d'un fichier déjà trop gros. */
   setFull(bytes: number | null): void
-  /** Un changement de fichier attend qu'un conflit ou un dépassement soit réglé. */
-  setSwitchPending(pending: boolean): void
+  /** Un changement de fichier attend : le bandeau en dit la raison (`null` le retire). */
+  setSwitchPending(block: SwitchBlock | null): void
   /** Affiche l'éditeur (sort de l'état d'erreur bloquante). */
   showEditor(): void
-  /** Remplace tout le panneau, sous l'en-tête, par le message et l'indication des réglages. */
-  showBlockingError(message: string): void
+  /** Remplace tout le panneau, sous l'en-tête, par le message, avec l'indication des réglages ou un bouton Retry. */
+  showBlockingError(message: string, style: BlockingErrorStyle): void
   /** Lève le masquage du démarrage. */
   reveal(): void
 }
@@ -69,6 +82,9 @@ export function createChrome(doc: Document, handlers: ChromeHandlers): Chrome {
   const fullBanner = byId(doc, 'full-banner')
   const fullText = byId(doc, 'full-text')
   const switchBanner = byId(doc, 'switch-banner')
+  const switchText = byId(doc, 'switch-text')
+  const blockingHint = byId(doc, 'blocking-hint')
+  const blockingRetry = byId(doc, 'blocking-retry')
   const blockingMessage = byId(doc, 'blocking-message')
   const dot = byId(doc, 'status-dot')
   const statusLabel = byId(doc, 'status-label')
@@ -78,6 +94,7 @@ export function createChrome(doc: Document, handlers: ChromeHandlers): Chrome {
   byId(doc, 'keep-mine').addEventListener('click', () => handlers.onKeepMine())
   byId(doc, 'reload').addEventListener('click', () => handlers.onReload())
   retryButton.addEventListener('click', () => handlers.onRetry())
+  blockingRetry.addEventListener('click', () => handlers.onBlockingRetry())
 
   return {
     editorHost: byId(doc, 'editor'),
@@ -105,16 +122,19 @@ export function createChrome(doc: Document, handlers: ChromeHandlers): Chrome {
       if (bytes !== null) fullText.textContent = fullBannerText(bytes)
     },
 
-    setSwitchPending(pending) {
-      switchBanner.hidden = !pending
+    setSwitchPending(block) {
+      switchBanner.hidden = block === null
+      if (block !== null) switchText.textContent = switchBlockMessage(block)
     },
 
     showEditor() {
       app.dataset.mode = 'editor'
     },
 
-    showBlockingError(message) {
+    showBlockingError(message, style) {
       blockingMessage.textContent = message
+      blockingHint.hidden = !style.hint
+      blockingRetry.hidden = !style.retry
       app.dataset.mode = 'error'
       switchBanner.hidden = true
     },

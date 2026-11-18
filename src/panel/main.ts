@@ -1,10 +1,11 @@
 // Point d'entrée du panneau : branche l'éditeur, la synchronisation et l'interface.
 
 import { POLL_INTERVAL_MS, SAVE_DEBOUNCE_MS, SAVE_MAX_WAIT_MS, SCRATCHPAD_MAX_BYTES, utf8Bytes } from '../shared/limits'
-import type { ReadOutput, ResolveOutput } from '../protocol'
+import type { FileErrorCode, ReadOutput, ResolveOutput } from '../protocol'
 import { createChrome } from './chrome'
 import { createEditor, type ScratchpadEditor, type ViewState } from './editor'
 import { frameFileApi } from './file-api'
+import { blockingErrorStyle, switchBlock } from './switch-guard'
 import { createSync, type Sync, type SyncState, type Timers } from './sync'
 import { flushViewState, loadViewState, saveViewState } from './view-state'
 
@@ -27,8 +28,11 @@ let session: Session | null = null
 // Changement de fichier : un seul à la fois, et un réglage modifié pendant l'un déclenche un second passage.
 let switching = false
 let switchAgain = false
-// Le changement est suspendu tant qu'un conflit ou un dépassement de taille n'est pas réglé.
+// Le changement est suspendu tant qu'un conflit, un dépassement de taille ou un échec d'enregistrement
+// n'est pas réglé : partir perdrait du texte.
 let switchBlocked = false
+// Dernier texte connu pour être identique au disque : l'écart avec l'éditeur dit s'il reste des frappes non enregistrées.
+let cleanText = ''
 
 /** Lance une tâche asynchrone sans jamais laisser un rejet non traité remonter. */
 function run(task: () => Promise<unknown> | unknown): void {
@@ -44,7 +48,11 @@ const chrome = createChrome(document, {
       await session?.sync.flush()
       await session?.sync.poll()
     }),
+  onBlockingRetry: () => run(switchFile),
 })
+
+const isDirty = (): boolean => (editor?.getText() ?? '') !== cleanText
+const currentBlock = (state: SyncState) => switchBlock(state, isDirty())
 
 // La taille affichée suit le texte, y compris après une frappe ou un ajout externe.
 let sizeFrame = 0
@@ -59,9 +67,9 @@ function refreshSize(): void {
   })
 }
 
-function showBlockingError(message: string, displayPath = ''): void {
+function showBlockingError(message: string, displayPath: string, code?: FileErrorCode): void {
   chrome.setPath(displayPath)
-  chrome.showBlockingError(message)
+  chrome.showBlockingError(message, blockingErrorStyle(code))
 }
 
 /** Deux images d'attente : l'éditeur a eu sa mesure, le défilement restauré tient. */
@@ -89,13 +97,20 @@ function mountSession(resolved: ResolvedFile, read: FileRead): void {
       getText: () => editor?.getText() ?? '',
       applyExternal: (text) => {
         editor?.applyExternal(text)
+        cleanText = text
         refreshSize()
       },
       // Une synchronisation détruite peut encore signaler une écriture en vol : on l'ignore.
       onState: (state) => {
         if (session !== current) return
+        // « saved » veut dire que l'éditeur et le disque portent le même texte.
+        if (state.status === 'saved') cleanText = editor?.getText() ?? ''
         chrome.render(state, { isDefault: current.isDefault })
-        if (switchBlocked && canSwitch(state)) run(switchFile)
+        if (switchBlocked) {
+          const block = currentBlock(state)
+          if (block === null) run(switchFile)
+          else chrome.setSwitchPending(block)
+        }
       },
       timers,
       debounceMs: SAVE_DEBOUNCE_MS,
@@ -103,13 +118,12 @@ function mountSession(resolved: ResolvedFile, read: FileRead): void {
     }),
   }
   session = current
+  cleanText = read.content
   chrome.setPath(resolved.displayPath)
   chrome.showEditor()
   chrome.render(current.sync.state, { isDefault: current.isDefault })
   refreshSize()
 }
-
-const canSwitch = (state: SyncState): boolean => state.conflict === null && state.full === null
 
 // Lire le défilement force une mise en page : on échantillonne l'état de vue au plus une fois par fenêtre
 // de 200 ms, au lieu de le faire à chaque frappe (la mise en page d'un long document est coûteuse).
@@ -134,27 +148,13 @@ function createPanelEditor(doc: string): ScratchpadEditor {
   })
 }
 
-async function start(): Promise<void> {
-  const resolved = await api.resolve()
-  if (resolved.status === 'error') return showBlockingError(resolved.message)
-  const read = await api.read(resolved.path)
-  if (read.status === 'error') return showBlockingError(read.message, resolved.displayPath)
-  const viewState = (await loadViewState(resolved.path)) ?? EMPTY_VIEW
-
-  // Éditeur créé avec le contenu déjà chargé et l'état de vue restauré, avant tout rendu visible.
-  editor = createPanelEditor(read.content)
-  editor.restoreViewState(viewState)
-  mountSession(resolved, read)
-  await nextFrames()
-}
-
 /** Bascule sur le fichier désigné par le réglage `filePath`, sans jamais perdre ni écraser de texte. */
 async function switchOnce(): Promise<void> {
   const resolved = await api.resolve()
   if (resolved.status === 'ok' && session && resolved.path === session.path) {
     // Même fichier (par exemple réglage vidé puis défaut explicite) : rien à faire.
     switchBlocked = false
-    chrome.setSwitchPending(false)
+    chrome.setSwitchPending(null)
     chrome.setPath(resolved.displayPath)
     return
   }
@@ -167,14 +167,15 @@ async function switchOnce(): Promise<void> {
   if (session) {
     // Enregistre d'abord le fichier courant, sans force : un conflit se tranche avant de partir.
     await session.sync.flush()
-    if (!canSwitch(session.sync.state)) {
+    const block = currentBlock(session.sync.state)
+    if (block !== null) {
       switchBlocked = true
-      chrome.setSwitchPending(true)
+      chrome.setSwitchPending(block)
       return
     }
   }
   switchBlocked = false
-  chrome.setSwitchPending(false)
+  chrome.setSwitchPending(null)
 
   const closing = session
   if (closing && editor) saveViewState(closing.path, editor.getViewState())
@@ -182,8 +183,8 @@ async function switchOnce(): Promise<void> {
   closing?.sync.dispose()
   void flushViewState()
 
-  if (resolved.status === 'error') return showBlockingError(resolved.message)
-  if (read?.status === 'error') return showBlockingError(read.message, resolved.displayPath)
+  if (resolved.status === 'error') return showBlockingError(resolved.message, '', resolved.code)
+  if (read?.status === 'error') return showBlockingError(read.message, resolved.displayPath, read.code)
   if (read === null) return
   if (editor) editor.replaceAll(read.content)
   else editor = createPanelEditor(read.content)
@@ -202,6 +203,10 @@ async function switchFile(): Promise<void> {
       switchAgain = false
       await switchOnce()
     } while (switchAgain)
+  } catch (error) {
+    // État interne impossible : sans session vivante, on affiche l'erreur avec un Retry plutôt qu'un panneau vide.
+    console.error('scratchpad: file switch failed', error)
+    if (!session) showBlockingError(error instanceof Error ? error.message : String(error), '', 'io_error')
   } finally {
     switching = false
   }
@@ -224,6 +229,8 @@ orca.settings.onDidChange(({ key }) => {
   if (key === 'filePath') run(switchFile)
 })
 
-start()
-  .catch((error) => showBlockingError(error instanceof Error ? error.message : String(error)))
+// Le démarrage passe par le même verrou que le changement de fichier : un réglage modifié pendant
+// le chargement déclenche un second passage au lieu de créer un deuxième éditeur.
+switchFile()
+  .then(nextFrames)
   .finally(() => chrome.reveal())
