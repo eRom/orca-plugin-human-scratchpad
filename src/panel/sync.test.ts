@@ -63,7 +63,9 @@ function setup(options: { text?: string; debounceMs?: number; maxWaitMs?: number
   const env = {
     text: options.text ?? 'hello',
     statResult: statOk(BASE.mtimeMs, BASE.size) as StatOutput,
-    readResult: readOk('disk', 'v-disk') as ReadOutput,
+    readResult: readOk('disk', 'v-disk') as ReadOutput | Promise<ReadOutput>,
+    throwOnWrite: false,
+    textReads: 0,
     writeResults: [] as (WriteOutput | Promise<WriteOutput>)[],
   }
   const api: FileApi = {
@@ -75,16 +77,24 @@ function setup(options: { text?: string; debounceMs?: number; maxWaitMs?: number
       calls.read.push(path)
       return env.readResult
     },
-    async write(input) {
+    // Pas `async` : permet de simuler une levée synchrone (pont fermé).
+    write(input) {
       calls.write.push(input)
-      return env.writeResults.shift() ?? saved(`v${calls.write.length}`)
+      if (env.throwOnWrite) {
+        env.throwOnWrite = false
+        throw new Error('bridge gone')
+      }
+      return Promise.resolve(env.writeResults.shift() ?? saved(`v${calls.write.length}`))
     },
   }
   const sync = createSync({
     api,
     path: PATH,
     base: { ...BASE },
-    getText: () => env.text,
+    getText: () => {
+      env.textReads++
+      return env.text
+    },
     applyExternal: (text) => { calls.applied.push(text) },
     onState: (state) => { states.push({ ...state }) },
     timers: clock.timers,
@@ -337,4 +347,143 @@ test('onState is called on each state change', async () => {
   clock.advance(1000)
   await settle()
   assert.deepEqual(states.map((s) => s.status), ['pending', 'saving', 'saved'])
+})
+
+test('a synchronous throw from api.write does not wedge the controller', async () => {
+  const { sync, calls, env } = setup()
+  env.throwOnWrite = true
+  sync.localChange()
+  await sync.flush()
+  assert.equal(calls.write.length, 1)
+  assert.equal(sync.state.status, 'error')
+  sync.localChange()
+  await sync.flush()
+  assert.equal(calls.write.length, 2, 'a second write happens')
+  assert.equal(sync.state.status, 'saved')
+  await sync.poll()
+  assert.equal(calls.stat.length, 1, 'poll runs again')
+})
+
+test('a flush already started completes its save even if dispose is called meanwhile', async () => {
+  const { sync, clock, calls, env } = setup()
+  const gate = deferred<WriteOutput>()
+  env.writeResults.push(gate.promise)
+  sync.localChange()
+  clock.advance(1000)
+  await settle()
+  assert.equal(calls.write.length, 1)
+  env.text = 'ab'
+  sync.localChange()
+  void sync.flush()
+  sync.dispose()
+  gate.resolve(saved('v1'))
+  await settle()
+  assert.equal(calls.write.length, 2)
+  assert.deepEqual(calls.write[1], { path: PATH, content: 'ab', baseVersion: 'v1', force: false })
+  assert.equal(clock.pending(), 0, 'dispose stops future scheduling')
+})
+
+test('poll retries the save after a write error', async () => {
+  const { sync, clock, calls, env } = setup()
+  env.writeResults.push({ status: 'error', code: 'io_error', message: 'disk full' })
+  sync.localChange()
+  clock.advance(1000)
+  await settle()
+  assert.equal(sync.state.status, 'error')
+  await sync.poll()
+  assert.equal(calls.write.length, 2)
+  assert.equal(sync.state.status, 'saved')
+  assert.equal(sync.state.error, null)
+})
+
+test('poll does not retry a failed save while a conflict is pending', async () => {
+  const { sync, clock, calls, env } = setup()
+  env.writeResults.push({ status: 'conflict', content: 'd', version: 'v-d', mtimeMs: 9, size: 9 })
+  sync.localChange()
+  clock.advance(1000)
+  await settle()
+  await sync.poll()
+  assert.equal(calls.write.length, 1)
+})
+
+test('reload leaves no pending changes behind when applyExternal echoes a change', async () => {
+  const clock = fakeTimers()
+  let echo: (() => void) | null = null
+  let writes = 0
+  const sync = createSync({
+    api: {
+      stat: async () => statOk(1, 1),
+      read: async () => readOk('x', 'v0'),
+      write: async () => {
+        writes++
+        return { status: 'conflict', content: 'disk', version: 'v-d', mtimeMs: 9, size: 9 }
+      },
+    },
+    path: PATH,
+    base: { ...BASE },
+    getText: () => 'mine',
+    applyExternal: () => { echo?.() },
+    onState: () => {},
+    timers: clock.timers,
+    debounceMs: 1000,
+    maxWaitMs: 5000,
+  })
+  echo = () => sync.localChange()
+  sync.localChange()
+  clock.advance(1000)
+  await settle()
+  sync.reload()
+  assert.equal(sync.state.status, 'saved')
+  await sync.flush()
+  // L'écho de l'éditeur ne laisse aucune modification à enregistrer.
+  assert.equal(writes, 1, 'flush has nothing left to write')
+  assert.equal(clock.pending(), 0)
+})
+
+test('continuous typing over the cap does not re-measure the text on every keystroke', async () => {
+  const { sync, clock, calls, env } = setup({ text: 'x'.repeat(50_001) })
+  // Une frappe toutes les 500 ms pendant 12 s, toujours au-dessus du plafond.
+  for (let t = 0; t < 12_000; t += 500) {
+    sync.localChange()
+    clock.advance(500)
+    await settle()
+  }
+  assert.equal(calls.write.length, 0)
+  assert.deepEqual(sync.state.full, { bytes: 50_001 })
+  // Sans remise à zéro du début de rafale, chaque frappe après 5 s déclencherait une mesure.
+  assert.ok(env.textReads <= 3, `text read ${env.textReads} times`)
+})
+
+test('a keystroke during an in-flight write that conflicts is sent by keepMine', async () => {
+  const { sync, clock, calls, env } = setup()
+  const gate = deferred<WriteOutput>()
+  env.writeResults.push(gate.promise)
+  sync.localChange()
+  clock.advance(1000)
+  await settle()
+  env.text = 'hello world'
+  sync.localChange()
+  gate.resolve({ status: 'conflict', content: 'disk text', version: 'v-disk', mtimeMs: 9, size: 9 })
+  await settle()
+  assert.equal(sync.state.status, 'pending')
+  assert.notEqual(sync.state.conflict, null)
+  await sync.keepMine()
+  assert.equal(calls.write.length, 2)
+  assert.deepEqual(calls.write[1], { path: PATH, content: 'hello world', baseVersion: 'v0', force: true })
+  assert.equal(sync.state.status, 'saved')
+})
+
+test('a keystroke while poll awaits the read raises a conflict and never applies the disk text', async () => {
+  const { sync, calls, env } = setup()
+  const gate = deferred<ReadOutput>()
+  env.statResult = statOk(5555, 99)
+  env.readResult = gate.promise
+  const polling = sync.poll()
+  await settle()
+  assert.equal(calls.read.length, 1)
+  sync.localChange()
+  gate.resolve(readOk('changed outside', 'v-new', 5555, 99))
+  await polling
+  assert.deepEqual(sync.state.conflict, { diskContent: 'changed outside', diskVersion: 'v-new' })
+  assert.equal(calls.applied.length, 0)
 })

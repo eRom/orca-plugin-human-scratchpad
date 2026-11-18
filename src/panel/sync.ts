@@ -56,6 +56,8 @@ export function createSync(options: SyncOptions): Sync {
   let timer: { handle: unknown } | null = null
   let burstStart: number | null = null
   let inFlight: Promise<void> | null = null
+  // Nombre de flush démarrés et non terminés : ils vont au bout de leur enregistrement même après dispose().
+  let flushing = 0
   let disposed = false
 
   const isDirty = (): boolean => changes !== cleanAt
@@ -77,6 +79,7 @@ export function createSync(options: SyncOptions): Sync {
   /** Programme un enregistrement : debounce, borné par l'attente maximale depuis le début de la rafale. */
   function schedule(): void {
     cancelTimer()
+    if (disposed) return
     const now = timers.now()
     if (burstStart === null) burstStart = now
     const delay = Math.max(0, Math.min(debounceMs, maxWaitMs - (now - burstStart)))
@@ -98,15 +101,18 @@ export function createSync(options: SyncOptions): Sync {
     const sentAt = changes
     burstStart = null
     setState({ status: 'saving', full: null })
-    const run = (async () => {
+    let run!: Promise<void>
+    run = (async () => {
       let result: WriteOutput
       try {
-        result = await api.write({ path, content, baseVersion: base.version, force })
+        // L'enveloppe async convertit une levée synchrone de l'API en rejet.
+        result = await (async () => api.write({ path, content, baseVersion: base.version, force }))()
       } catch (error) {
         result = { status: 'error', code: 'io_error', message: error instanceof Error ? error.message : String(error) }
       }
-      inFlight = null
-      if (!disposed) onWriteResult(result, sentAt)
+      // Ce point est toujours atteint après un await : `run` est déjà affecté.
+      if (inFlight === run) inFlight = null
+      if (!disposed || flushing > 0) onWriteResult(result, sentAt)
     })()
     inFlight = run
     return run
@@ -133,12 +139,14 @@ export function createSync(options: SyncOptions): Sync {
 
   /** Enregistre si besoin, sauf conflit ou écriture déjà en vol. */
   async function save(): Promise<void> {
-    if (disposed || inFlight || state.conflict) return
+    if ((disposed && flushing === 0) || inFlight || state.conflict) return
     cancelTimer()
     if (!isDirty()) return
     const content = getText()
     const bytes = utf8Bytes(content)
     if (bytes > SCRATCHPAD_MAX_BYTES) {
+      // Remise à zéro de la rafale : au-dessus du plafond, on ne mesure pas 50 Ko à chaque frappe.
+      burstStart = null
       setState({ full: { bytes }, status: 'pending' })
       return
     }
@@ -170,13 +178,23 @@ export function createSync(options: SyncOptions): Sync {
 
     async flush() {
       if (disposed) return
-      cancelTimer()
-      if (inFlight) await inFlight
-      await save()
+      flushing++
+      try {
+        cancelTimer()
+        while (inFlight) await inFlight
+        await save()
+      } finally {
+        flushing--
+      }
     },
 
     async poll() {
       if (disposed || inFlight) return
+      // Une écriture en erreur n'a pas de minuteur de reprise : le poll la retente (sans conflit, sous le plafond).
+      if (state.status === 'error' && isDirty() && !state.conflict) {
+        await save()
+        return
+      }
       const epoch = baseEpoch
       const stat = await api.stat(path)
       if (disposed || inFlight || epoch !== baseEpoch) return
@@ -234,8 +252,9 @@ export function createSync(options: SyncOptions): Sync {
       // Date et taille inconnues : le prochain poll relit, retrouve la même version et les met à jour.
       base = { version: diskVersion, mtimeMs: -1, size: -1 }
       baseEpoch++
-      cleanAt = changes
       applyExternal(diskContent)
+      // Après applyExternal : un écho de l'éditeur ne doit pas laisser de modification en attente.
+      cleanAt = changes
       setState({ conflict: null, status: 'saved', full: null, error: null })
     },
 
