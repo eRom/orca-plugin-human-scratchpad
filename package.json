@@ -1,0 +1,15 @@
+{
+  "name": "orca-plugin-human-scratchpad",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/panel/main.ts --outfile dist/panel.js --target browser --format esm --sourcemap=linked",
+    "test": "orca plugin test .",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}

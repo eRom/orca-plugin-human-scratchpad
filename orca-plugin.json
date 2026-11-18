@@ -1,0 +1,34 @@
+{
+  "manifestVersion": 2,
+  "id": "human-scratchpad",
+  "name": "Scratchpad",
+  "version": "0.1.0",
+  "description": "A sidebar panel to edit one global markdown scratchpad file. It runs as a trusted worker because it reads and writes a single markdown file chosen by the user, outside any workspace.",
+  "author": { "name": "Romain Ecarnot", "url": "https://github.com/eRom" },
+  "repository": "https://github.com/eRom/orca-plugin-human-scratchpad",
+  "license": "MIT",
+  "engines": {
+    "orca": ">=1.4.246"
+  },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "capabilities": [
+    { "kind": "settings:own" },
+    { "kind": "storage:own" }
+  ],
+  "contributes": {
+    "panels": [
+      { "id": "scratchpad", "title": "Scratchpad", "icon": "file-text", "entry": "panel/index.html", "ui": "html" }
+    ],
+    "settings": [
+      {
+        "key": "filePath",
+        "title": "Scratchpad file",
+        "type": "string",
+        "default": "",
+        "description": "Leave empty to use ~/orca-scratchpad.md. Accepts ~ and must end with .md."
+      }
+    ]
+  }
+}
