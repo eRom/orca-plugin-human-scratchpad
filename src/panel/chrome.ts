@@ -18,13 +18,19 @@ export function fullBannerText(bytes: number): string {
   return `Scratchpad full (${formatBytes(bytes)} / ${formatBytes(SCRATCHPAD_MAX_BYTES)}): delete some text to resume saving`
 }
 
-/** Libellé et pastille du pied. Priorité : erreur, puis fichier absent au repos, puis état d'enregistrement. */
+/**
+ * Libellé et pastille du pied. Priorité : erreur, puis fichier absent au repos, puis enregistrement suspendu
+ * (conflit, fichier plein : « Editing… » serait faux, rien ne part sur le disque), puis état d'enregistrement.
+ */
 export function describeFooter(state: SyncState, isDefault: boolean): FooterInfo {
   if (state.status === 'error' && state.error) return { dot: 'error', label: state.error.message, retry: true }
   if (state.missing && state.status === 'saved') {
-    const label = isDefault ? 'File was deleted, typing will recreate it' : 'File not found'
+    // Le fichier absent compte comme vide : la première frappe lève « Changed elsewhere », « Keep mine » le recrée.
+    const label = isDefault ? 'File was deleted: type, then choose Keep mine to recreate it' : 'File not found'
     return { dot: 'missing', label, retry: false }
   }
+  if (state.status === 'pending' && state.conflict) return { dot: 'error', label: 'Not saved: resolve the banner above', retry: false }
+  if (state.status === 'pending' && state.full) return { dot: 'error', label: 'Not saved: delete some text to resume saving', retry: false }
   switch (state.status) {
     case 'pending':
       return { dot: 'pending', label: 'Editing…', retry: false }

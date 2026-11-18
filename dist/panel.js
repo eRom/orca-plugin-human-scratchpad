@@ -1,7 +1,9 @@
 // src/shared/limits.ts
 var SCRATCHPAD_MAX_BYTES = 50000;
 var SAVE_DEBOUNCE_MS = 300;
-var SAVE_MAX_WAIT_MS = 5000;
+var SAVE_MAX_WAIT_MS = 300;
+var DRAFT_DEBOUNCE_MS = 300;
+var DRAFT_MAX_JSON_BYTES = 250000;
 var POLL_INTERVAL_MS = 2000;
 var encoder = new TextEncoder;
 function utf8Bytes(text) {
@@ -21,9 +23,13 @@ function describeFooter(state, isDefault) {
   if (state.status === "error" && state.error)
     return { dot: "error", label: state.error.message, retry: true };
   if (state.missing && state.status === "saved") {
-    const label = isDefault ? "File was deleted, typing will recreate it" : "File not found";
+    const label = isDefault ? "File was deleted: type, then choose Keep mine to recreate it" : "File not found";
     return { dot: "missing", label, retry: false };
   }
+  if (state.status === "pending" && state.conflict)
+    return { dot: "error", label: "Not saved: resolve the banner above", retry: false };
+  if (state.status === "pending" && state.full)
+    return { dot: "error", label: "Not saved: delete some text to resume saving", retry: false };
   switch (state.status) {
     case "pending":
       return { dot: "pending", label: "Editing…", retry: false };
@@ -112,6 +118,105 @@ function createChrome(doc, handlers) {
       doc.body.classList.remove("booting");
     }
   };
+}
+
+// src/panel/draft.ts
+var STORAGE_KEY = "draft";
+function isSavingPaused(state, dirty) {
+  return dirty && (state.conflict !== null || state.full !== null || state.status === "error");
+}
+function parseDraft(value) {
+  if (typeof value !== "object" || value === null)
+    return null;
+  const { path, text, baseVersion } = value;
+  if (typeof path !== "string" || typeof text !== "string" || typeof baseVersion !== "string")
+    return null;
+  return { path, text, baseVersion };
+}
+function decideMount(draft, path, disk) {
+  if (draft === null || draft.path !== path)
+    return { kind: "disk", clearDraft: false };
+  if (draft.text === disk.content)
+    return { kind: "disk", clearDraft: true };
+  return { kind: "resume", text: draft.text, baseVersion: draft.baseVersion };
+}
+function createDraftKeeper(storage, timers, delayMs = DRAFT_DEBOUNCE_MS) {
+  let timer = null;
+  let waiting = false;
+  let snapshot = null;
+  let present = false;
+  let chain = Promise.resolve();
+  function enqueue(task) {
+    chain = chain.then(task).catch((error) => console.warn("scratchpad: draft storage failed", error));
+  }
+  function write() {
+    const draft = snapshot?.() ?? null;
+    snapshot = null;
+    if (draft === null)
+      return;
+    const value = { path: draft.path, text: draft.text, baseVersion: draft.baseVersion };
+    if (utf8Bytes(JSON.stringify(value)) > DRAFT_MAX_JSON_BYTES) {
+      console.warn("scratchpad: draft too large to keep");
+      if (present) {
+        present = false;
+        enqueue(() => storage.delete(STORAGE_KEY));
+      }
+      return;
+    }
+    present = true;
+    enqueue(() => storage.set(STORAGE_KEY, value));
+  }
+  function cancelTimer() {
+    if (waiting)
+      timers.clear(timer);
+    waiting = false;
+    timer = null;
+  }
+  return {
+    async load() {
+      try {
+        return parseDraft(await storage.get(STORAGE_KEY));
+      } catch {
+        return null;
+      }
+    },
+    hold(next) {
+      snapshot = next;
+      if (waiting)
+        return;
+      waiting = true;
+      timer = timers.set(() => {
+        waiting = false;
+        timer = null;
+        write();
+      }, delayMs);
+    },
+    flush() {
+      if (waiting) {
+        cancelTimer();
+        write();
+      }
+      return chain;
+    },
+    release() {
+      cancelTimer();
+      snapshot = null;
+      if (present) {
+        present = false;
+        enqueue(() => storage.delete(STORAGE_KEY));
+      }
+      return chain;
+    },
+    adopt() {
+      present = true;
+    }
+  };
+}
+function trackDraft(keeper, state, dirty, snapshot) {
+  if (state.status === "saved")
+    keeper.release();
+  else if (isSavingPaused(state, dirty))
+    keeper.hold(snapshot);
 }
 
 // node_modules/@marijn/find-cluster-break/src/index.js
@@ -26435,6 +26540,18 @@ function blockingErrorStyle(code2) {
     return { hint: true, retry: false };
   return { hint: false, retry: true };
 }
+var MAX_FLUSH_ROUNDS = 20;
+async function flushBeforeSwitch(sync, isDirty) {
+  for (let round = 0;round < MAX_FLUSH_ROUNDS; round++) {
+    await sync.flush();
+    const block = switchBlock(sync.state, isDirty());
+    if (block !== null)
+      return block;
+    if (!isDirty())
+      return null;
+  }
+  return "error";
+}
 
 // src/panel/sync.ts
 function createSync(options) {
@@ -26541,6 +26658,9 @@ function createSync(options) {
   const sync = {
     get state() {
       return state;
+    },
+    get baseVersion() {
+      return base2.version;
     },
     localChange() {
       if (disposed)
@@ -26975,7 +27095,7 @@ function renderToolbar(parent, onCommand) {
 }
 
 // src/panel/view-state.ts
-var STORAGE_KEY = "viewState";
+var STORAGE_KEY2 = "viewState";
 var WRITE_DEBOUNCE_MS = 500;
 var isFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value);
 function parseViewState(value) {
@@ -27002,10 +27122,10 @@ function createViewStateStore(storage, debounceMs = WRITE_DEBOUNCE_MS) {
       return chain;
     chain = chain.then(async () => {
       try {
-        const record = asRecord(await storage.get(STORAGE_KEY));
+        const record = asRecord(await storage.get(STORAGE_KEY2));
         for (const [path, state] of batch)
           record[path] = { ...state };
-        await storage.set(STORAGE_KEY, record);
+        await storage.set(STORAGE_KEY2, record);
       } catch (error) {
         console.warn("scratchpad: could not save view state", error);
       }
@@ -27015,7 +27135,7 @@ function createViewStateStore(storage, debounceMs = WRITE_DEBOUNCE_MS) {
   return {
     async load(path) {
       try {
-        const record = asRecord(await storage.get(STORAGE_KEY));
+        const record = asRecord(await storage.get(STORAGE_KEY2));
         return parseViewState(record[path]);
       } catch {
         return null;
@@ -27054,6 +27174,7 @@ var timers = {
   set: (fn, ms) => window.setTimeout(fn, ms),
   clear: (handle) => window.clearTimeout(handle)
 };
+var draftKeeper = createDraftKeeper(orca.storage, timers);
 var editor = null;
 var session = null;
 var switching = false;
@@ -27108,14 +27229,19 @@ function nextFrames() {
     }));
   });
 }
-function mountSession(resolved, read) {
+function draftSnapshot(of) {
+  if (session !== of || !editor)
+    return null;
+  return { path: of.path, text: editor.getText(), baseVersion: of.sync.baseVersion };
+}
+function mountSession(resolved, read, resume) {
   const current = {
     path: resolved.path,
     isDefault: resolved.isDefault,
     sync: createSync({
       api,
       path: resolved.path,
-      base: { version: read.version, mtimeMs: read.mtimeMs, size: read.size },
+      base: resume ? { version: resume.baseVersion, mtimeMs: -1, size: -1 } : { version: read.version, mtimeMs: read.mtimeMs, size: read.size },
       getText: () => editor?.getText() ?? "",
       applyExternal: (text) => {
         editor?.applyExternal(text);
@@ -27127,6 +27253,7 @@ function mountSession(resolved, read) {
           return;
         if (state.status === "saved")
           cleanText = editor?.getText() ?? "";
+        trackDraft(draftKeeper, state, isDirty(), () => draftSnapshot(current));
         chrome2.render(state, { isDefault: current.isDefault });
         if (switchBlocked) {
           const block = currentBlock(state);
@@ -27147,6 +27274,10 @@ function mountSession(resolved, read) {
   chrome2.showEditor();
   chrome2.render(current.sync.state, { isDefault: current.isDefault });
   refreshSize();
+  if (resume) {
+    draftKeeper.adopt();
+    current.sync.localChange();
+  }
 }
 var viewSampleTimer = 0;
 function scheduleViewSample() {
@@ -27163,7 +27294,10 @@ function createPanelEditor(doc2) {
     doc: doc2,
     extensions: scratchpadTheme,
     onLocalChange: () => {
-      session?.sync.localChange();
+      const current = session;
+      current?.sync.localChange();
+      if (current)
+        trackDraft(draftKeeper, current.sync.state, true, () => draftSnapshot(current));
       refreshSize();
     },
     onViewChange: scheduleViewSample
@@ -27179,9 +27313,9 @@ async function switchOnce() {
   }
   const read = resolved.status === "ok" ? await api.read(resolved.path) : null;
   const viewState = resolved.status === "ok" && read?.status === "ok" ? await loadViewState(resolved.path) ?? EMPTY_VIEW : EMPTY_VIEW;
+  const draft = resolved.status === "ok" && read?.status === "ok" ? await draftKeeper.load() : null;
   if (session) {
-    await session.sync.flush();
-    const block = currentBlock(session.sync.state);
+    const block = await flushBeforeSwitch(session.sync, isDirty);
     if (block !== null) {
       switchBlocked = true;
       chrome2.setSwitchPending(block);
@@ -27202,12 +27336,16 @@ async function switchOnce() {
     return showBlockingError(read.message, resolved.displayPath, read.code);
   if (read === null)
     return;
+  const decision = decideMount(draft, resolved.path, read);
+  if (decision.kind === "disk" && decision.clearDraft)
+    draftKeeper.release();
+  const text = decision.kind === "resume" ? decision.text : read.content;
   if (editor)
-    editor.replaceAll(read.content);
+    editor.replaceAll(text);
   else
-    editor = createPanelEditor(read.content);
+    editor = createPanelEditor(text);
   editor.restoreViewState(viewState);
-  mountSession(resolved, read);
+  mountSession(resolved, read, decision.kind === "resume" ? decision : null);
 }
 async function switchFile() {
   if (switching) {
@@ -27233,16 +27371,16 @@ window.setInterval(() => {
     run(() => session?.sync.poll());
 }, POLL_INTERVAL_MS);
 document.addEventListener("visibilitychange", () => {
-  run(() => document.hidden ? session?.sync.flush() : session?.sync.poll());
+  run(() => document.hidden ? Promise.all([session?.sync.flush(), draftKeeper.flush()]) : session?.sync.poll());
 });
 window.addEventListener("focus", () => run(() => session?.sync.poll()));
-window.addEventListener("blur", () => run(() => session?.sync.flush()));
-window.addEventListener("pagehide", () => run(() => session?.sync.flush()));
+window.addEventListener("blur", () => run(() => Promise.all([session?.sync.flush(), draftKeeper.flush()])));
+window.addEventListener("pagehide", () => run(() => Promise.all([session?.sync.flush(), draftKeeper.flush()])));
 orca.settings.onDidChange(({ key }) => {
   if (key === "filePath")
     run(switchFile);
 });
 switchFile().then(nextFrames).finally(() => chrome2.reveal());
 
-//# debugId=EFF8A86496FA92AB64756E2164756E21
+//# debugId=D9A11550CE6D318264756E2164756E21
 //# sourceMappingURL=panel.js.map

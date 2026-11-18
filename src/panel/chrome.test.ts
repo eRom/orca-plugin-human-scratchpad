@@ -16,7 +16,7 @@ test('an error shows its message with a retry action', () => {
 })
 
 test('a missing file reads differently for the default and a custom path', () => {
-  assert.equal(describeFooter({ ...idle, missing: true }, true).label, 'File was deleted, typing will recreate it')
+  assert.equal(describeFooter({ ...idle, missing: true }, true).label, 'File was deleted: type, then choose Keep mine to recreate it')
   assert.equal(describeFooter({ ...idle, missing: true }, false).label, 'File not found')
 })
 
@@ -39,4 +39,14 @@ test('the full banner states the size and the limit', () => {
 test('each switch block has its own explanation', () => {
   assert.equal(switchBlockMessage('error'), "Can't switch files: unsaved changes could not be saved")
   assert.notEqual(switchBlockMessage('conflict'), switchBlockMessage('full'))
+})
+
+test('footer never says Editing while saving is paused', () => {
+  const conflict = { diskContent: 'agent', diskVersion: 'v1' }
+  const paused = describeFooter({ ...idle, status: 'pending', conflict }, true)
+  assert.equal(paused.label, 'Not saved: resolve the banner above')
+  assert.equal(paused.dot, 'error')
+  assert.equal(describeFooter({ ...idle, status: 'pending', full: { bytes: 60_000 } }, true).label, 'Not saved: delete some text to resume saving')
+  // Pendant « Keep mine », l'enregistrement est en cours : le pied le dit.
+  assert.equal(describeFooter({ ...idle, status: 'saving', conflict }, true).label, 'Saving…')
 })

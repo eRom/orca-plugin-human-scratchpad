@@ -41,6 +41,8 @@ export type Sync = {
   reload(): void
   dispose(): void
   readonly state: SyncState
+  /** Version du disque dont le texte local est issu : c'est elle qu'un brouillon doit retenir. */
+  readonly baseVersion: string
 }
 
 export function createSync(options: SyncOptions): Sync {
@@ -161,6 +163,10 @@ export function createSync(options: SyncOptions): Sync {
   const sync: Sync = {
     get state() {
       return state
+    },
+
+    get baseVersion() {
+      return base.version
     },
 
     localChange() {

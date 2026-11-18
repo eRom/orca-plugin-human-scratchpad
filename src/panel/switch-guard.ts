@@ -1,7 +1,7 @@
 // Garde du changement de fichier : décide si l'on peut quitter le fichier courant sans perdre de texte.
 
 import type { FileErrorCode } from '../protocol'
-import type { SyncState } from './sync'
+import type { Sync, SyncState } from './sync'
 
 export type SwitchBlock = 'conflict' | 'full' | 'error'
 
@@ -26,4 +26,23 @@ export type BlockingErrorStyle = { hint: boolean; retry: boolean }
 export function blockingErrorStyle(code: FileErrorCode | undefined): BlockingErrorStyle {
   if (code === 'invalid_path' || code === 'not_found' || code === 'too_large') return { hint: true, retry: false }
   return { hint: false, retry: true }
+}
+
+/** Plafond de tours : une frappe continue ne doit pas retenir le changement de fichier indéfiniment. */
+const MAX_FLUSH_ROUNDS = 20
+
+/**
+ * Enregistre le fichier courant avant de le quitter. Une frappe arrivée pendant l'écriture laisse l'éditeur
+ * en avance sur le disque : on enregistre de nouveau, et on ne rend la main qu'une fois le texte écrit égal
+ * au texte courant. Renvoie la raison de retenir le changement, ou `null` s'il peut avoir lieu.
+ */
+export async function flushBeforeSwitch(sync: Pick<Sync, 'flush' | 'state'>, isDirty: () => boolean): Promise<SwitchBlock | null> {
+  for (let round = 0; round < MAX_FLUSH_ROUNDS; round++) {
+    await sync.flush()
+    const block = switchBlock(sync.state, isDirty())
+    if (block !== null) return block
+    if (!isDirty()) return null
+  }
+  // Jamais atteint avec un humain : le texte bouge encore après 20 enregistrements. On retient le changement.
+  return 'error'
 }

@@ -3,10 +3,11 @@
 import { POLL_INTERVAL_MS, SAVE_DEBOUNCE_MS, SAVE_MAX_WAIT_MS, SCRATCHPAD_MAX_BYTES, utf8Bytes } from '../shared/limits'
 import type { FileErrorCode, ReadOutput, ResolveOutput } from '../protocol'
 import { createChrome } from './chrome'
+import { createDraftKeeper, decideMount, trackDraft, type Draft, type MountDecision } from './draft'
 import { createEditor, type ScratchpadEditor, type ViewState } from './editor'
 import { frameFileApi } from './file-api'
 import { applyFormat, formatRange } from './format-commands'
-import { blockingErrorStyle, switchBlock } from './switch-guard'
+import { blockingErrorStyle, flushBeforeSwitch, switchBlock } from './switch-guard'
 import { createSync, type Sync, type SyncState, type Timers } from './sync'
 import { scratchpadTheme } from './theme'
 import { renderToolbar } from './toolbar'
@@ -25,6 +26,9 @@ const timers: Timers = {
   set: (fn, ms) => window.setTimeout(fn, ms),
   clear: (handle) => window.clearTimeout(handle as number),
 }
+
+// Brouillon de secours (voir draft.ts) : gardé tant que l'enregistrement est suspendu.
+const draftKeeper = createDraftKeeper(orca.storage, timers)
 
 let editor: ScratchpadEditor | null = null
 let session: Session | null = null
@@ -98,14 +102,24 @@ function nextFrames(): Promise<void> {
   })
 }
 
-function mountSession(resolved: ResolvedFile, read: FileRead): void {
+/** Instantané du brouillon : le texte de l'éditeur, rattaché à la version du disque dont il est issu. */
+function draftSnapshot(of: Session): Draft | null {
+  if (session !== of || !editor) return null
+  return { path: of.path, text: editor.getText(), baseVersion: of.sync.baseVersion }
+}
+
+/**
+ * `resume` : le texte de l'éditeur est un brouillon relu au démarrage. La synchronisation repart de la version
+ * du disque d'où il venait (date et taille inconnues : le prochain poll relit) ; le chemin habituel tranche.
+ */
+function mountSession(resolved: ResolvedFile, read: FileRead, resume: Extract<MountDecision, { kind: 'resume' }> | null): void {
   const current: Session = {
     path: resolved.path,
     isDefault: resolved.isDefault,
     sync: createSync({
       api,
       path: resolved.path,
-      base: { version: read.version, mtimeMs: read.mtimeMs, size: read.size },
+      base: resume ? { version: resume.baseVersion, mtimeMs: -1, size: -1 } : { version: read.version, mtimeMs: read.mtimeMs, size: read.size },
       getText: () => editor?.getText() ?? '',
       applyExternal: (text) => {
         editor?.applyExternal(text)
@@ -117,6 +131,7 @@ function mountSession(resolved: ResolvedFile, read: FileRead): void {
         if (session !== current) return
         // « saved » veut dire que l'éditeur et le disque portent le même texte.
         if (state.status === 'saved') cleanText = editor?.getText() ?? ''
+        trackDraft(draftKeeper, state, isDirty(), () => draftSnapshot(current))
         chrome.render(state, { isDefault: current.isDefault })
         if (switchBlocked) {
           const block = currentBlock(state)
@@ -135,6 +150,11 @@ function mountSession(resolved: ResolvedFile, read: FileRead): void {
   chrome.showEditor()
   chrome.render(current.sync.state, { isDefault: current.isDefault })
   refreshSize()
+  if (resume) {
+    draftKeeper.adopt()
+    // Le texte du brouillon diffère du disque : une modification en attente, comme après une frappe.
+    current.sync.localChange()
+  }
 }
 
 // Lire le défilement force une mise en page : on échantillonne l'état de vue au plus une fois par fenêtre
@@ -153,7 +173,10 @@ function createPanelEditor(doc: string): ScratchpadEditor {
     doc,
     extensions: scratchpadTheme,
     onLocalChange: () => {
-      session?.sync.localChange()
+      const current = session
+      current?.sync.localChange()
+      // Enregistrement suspendu : chaque frappe met le brouillon à jour (au plus une écriture toutes les 300 ms).
+      if (current) trackDraft(draftKeeper, current.sync.state, true, () => draftSnapshot(current))
       refreshSize()
     },
     onViewChange: scheduleViewSample,
@@ -175,11 +198,12 @@ async function switchOnce(): Promise<void> {
   // l'échange, plus aucun await, donc aucune frappe ne peut tomber dans le vide.
   const read = resolved.status === 'ok' ? await api.read(resolved.path) : null
   const viewState = resolved.status === 'ok' && read?.status === 'ok' ? ((await loadViewState(resolved.path)) ?? EMPTY_VIEW) : EMPTY_VIEW
+  const draft = resolved.status === 'ok' && read?.status === 'ok' ? await draftKeeper.load() : null
 
   if (session) {
-    // Enregistre d'abord le fichier courant, sans force : un conflit se tranche avant de partir.
-    await session.sync.flush()
-    const block = currentBlock(session.sync.state)
+    // Enregistre d'abord le fichier courant, sans force : un conflit se tranche avant de partir. Une frappe
+    // arrivée pendant l'écriture déclenche un nouvel enregistrement : on ne part qu'avec le texte entièrement écrit.
+    const block = await flushBeforeSwitch(session.sync, isDirty)
     if (block !== null) {
       switchBlocked = true
       chrome.setSwitchPending(block)
@@ -198,10 +222,13 @@ async function switchOnce(): Promise<void> {
   if (resolved.status === 'error') return showBlockingError(resolved.message, '', resolved.code)
   if (read?.status === 'error') return showBlockingError(read.message, resolved.displayPath, read.code)
   if (read === null) return
-  if (editor) editor.replaceAll(read.content)
-  else editor = createPanelEditor(read.content)
+  const decision = decideMount(draft, resolved.path, read)
+  if (decision.kind === 'disk' && decision.clearDraft) void draftKeeper.release()
+  const text = decision.kind === 'resume' ? decision.text : read.content
+  if (editor) editor.replaceAll(text)
+  else editor = createPanelEditor(text)
   editor.restoreViewState(viewState)
-  mountSession(resolved, read)
+  mountSession(resolved, read, decision.kind === 'resume' ? decision : null)
 }
 
 async function switchFile(): Promise<void> {
@@ -229,13 +256,13 @@ window.setInterval(() => {
   if (!document.hidden) run(() => session?.sync.poll())
 }, POLL_INTERVAL_MS)
 document.addEventListener('visibilitychange', () => {
-  run(() => (document.hidden ? session?.sync.flush() : session?.sync.poll()))
+  run(() => (document.hidden ? Promise.all([session?.sync.flush(), draftKeeper.flush()]) : session?.sync.poll()))
 })
 window.addEventListener('focus', () => run(() => session?.sync.poll()))
 // Le démontage par changement de panneau ne déclenche aucun de ces événements (mesuré en tâche 3) :
 // la sécurité des données repose sur le debounce court. Ils aident quand la fenêtre se masque.
-window.addEventListener('blur', () => run(() => session?.sync.flush()))
-window.addEventListener('pagehide', () => run(() => session?.sync.flush()))
+window.addEventListener('blur', () => run(() => Promise.all([session?.sync.flush(), draftKeeper.flush()])))
+window.addEventListener('pagehide', () => run(() => Promise.all([session?.sync.flush(), draftKeeper.flush()])))
 
 orca.settings.onDidChange(({ key }) => {
   if (key === 'filePath') run(switchFile)
