@@ -7,6 +7,7 @@ import { createEditor, type ScratchpadEditor, type ViewState } from './editor'
 import { frameFileApi } from './file-api'
 import { blockingErrorStyle, switchBlock } from './switch-guard'
 import { createSync, type Sync, type SyncState, type Timers } from './sync'
+import { scratchpadTheme } from './theme'
 import { flushViewState, loadViewState, saveViewState } from './view-state'
 
 type ResolvedFile = Extract<ResolveOutput, { status: 'ok' }>
@@ -139,7 +140,7 @@ function scheduleViewSample(): void {
 function createPanelEditor(doc: string): ScratchpadEditor {
   return createEditor(chrome.editorHost, {
     doc,
-    extensions: [],
+    extensions: scratchpadTheme,
     onLocalChange: () => {
       session?.sync.localChange()
       refreshSize()

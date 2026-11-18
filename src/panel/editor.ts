@@ -1,5 +1,5 @@
 // Éditeur de base : CodeMirror 6 en markdown brut, sans rendu.
-// La colorisation fine (langages, thème) arrive par `opts.extensions` (tâche 7).
+// La colorisation (thème, décorations) arrive par `opts.extensions` ; les langages des blocs de code sont branchés ici.
 
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { deleteMarkupBackward, insertNewlineContinueMarkup, markdown, markdownLanguage } from '@codemirror/lang-markdown'
@@ -7,6 +7,7 @@ import { search, searchKeymap } from '@codemirror/search'
 import { Annotation, EditorState, Prec, Transaction, type Extension } from '@codemirror/state'
 import { drawSelection, EditorView, highlightActiveLine, keymap } from '@codemirror/view'
 import type { FormatResult } from './format-commands'
+import { codeLanguages } from './languages'
 import { minimalChange } from './minimal-change'
 
 /**
@@ -33,7 +34,7 @@ export type ScratchpadEditor = {
 
 export type EditorOptions = {
   doc: string
-  /** La tâche 7 y ajoute langages et thème. */
+  /** Thème de colorisation (scratchpadTheme) et tout ajout propre à l'appelant. */
   extensions: Extension[]
   /** Appelé seulement pour les transactions qui ne sont pas `external`. */
   onLocalChange(): void
@@ -84,7 +85,7 @@ function baseExtensions(): Extension[] {
       { key: 'Enter', run: insertNewlineContinueMarkup },
       { key: 'Backspace', run: deleteMarkupBackward },
     ])),
-    markdown({ base: markdownLanguage, addKeymap: false }),
+    markdown({ base: markdownLanguage, codeLanguages, addKeymap: false }),
     history(),
     drawSelection(),
     EditorState.allowMultipleSelections.of(true),

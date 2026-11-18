@@ -211,3 +211,31 @@ button:focus-visible {
 .dot[data-state='missing'] {
   background: var(--orca-destructive);
 }
+
+/* Palette de syntaxe : Orca n'expose aucune couleur syntaxique, on la définit ici, une fois par schéma.
+   Orca pose `light` ou `dark` sur <html> et la bascule à chaud ; chaque teinte vise 4.5:1 sur --orca-background.
+   Sans classe (hors Orca), le schéma sombre s'applique. */
+:root,
+:root.dark {
+  --sp-syntax-keyword: #b69cf7;
+  --sp-syntax-string: #7ee0a1;
+  --sp-syntax-number: #f5a672;
+  --sp-syntax-comment: #8b919a;
+  --sp-syntax-function: #7ab7ff;
+  --sp-syntax-type: #e6c06e;
+  --sp-syntax-property: #6fd3dc;
+  --sp-syntax-operator: #f08aa0;
+  --sp-syntax-link: #6db3ff;
+}
+
+:root.light {
+  --sp-syntax-keyword: #7c3aed;
+  --sp-syntax-string: #15803d;
+  --sp-syntax-number: #c2410c;
+  --sp-syntax-comment: #6b7280;
+  --sp-syntax-function: #2563eb;
+  --sp-syntax-type: #a16207;
+  --sp-syntax-property: #0e7490;
+  --sp-syntax-operator: #be185d;
+  --sp-syntax-link: #1d4ed8;
+}
