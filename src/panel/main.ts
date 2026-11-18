@@ -223,7 +223,7 @@ async function switchOnce(): Promise<void> {
   if (read?.status === 'error') return showBlockingError(read.message, resolved.displayPath, read.code)
   if (read === null) return
   const decision = decideMount(draft, resolved.path, read)
-  if (decision.kind === 'disk' && decision.clearDraft) void draftKeeper.release()
+  if (decision.kind === 'disk' && decision.clearDraft) void draftKeeper.discard()
   const text = decision.kind === 'resume' ? decision.text : read.content
   if (editor) editor.replaceAll(text)
   else editor = createPanelEditor(text)

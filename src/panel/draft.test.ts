@@ -245,6 +245,7 @@ async function mountPanel(api: FileApi, disk: { content: string; version: string
     debounceMs: 300,
     maxWaitMs: 300,
   })
+  if (decision.kind === 'disk' && decision.clearDraft) await keeper.discard()
   if (decision.kind === 'resume') {
     keeper.adopt()
     sync.localChange()
@@ -365,10 +366,18 @@ test('write error then unmount: the draft resumes and saves normally once the di
 
 test('a draft equal to the disk is discarded at mount', async () => {
   const { disk, api } = fakeDisk({ content: 'same', version: 'v0' })
-  const { storage } = fakeStorage({ draft: { path: '/a.md', text: 'same', baseVersion: 'v-old' } })
+  const { storage, data } = fakeStorage({ draft: { path: '/a.md', text: 'same', baseVersion: 'v-old' } })
   const panel = await mountPanel(api, disk, storage)
   assert.deepEqual(panel.decision, { kind: 'disk', clearDraft: true })
   assert.equal(panel.text(), 'same')
+  assert.equal(data.has('draft'), false, 'the stale draft is removed from storage at mount')
+
+  // Sans cela, un changement ultérieur du disque ressusciterait ce texte périmé en bandeau « Changed elsewhere ».
+  disk.content = 'agent'
+  disk.version = 'v1'
+  const next = await mountPanel(api, disk, storage)
+  assert.deepEqual(next.decision, { kind: 'disk', clearDraft: false })
+  assert.equal(next.text(), 'agent')
 })
 
 test('a normal save leaves no draft behind and never touches storage', async () => {

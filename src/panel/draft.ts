@@ -51,6 +51,8 @@ export type DraftKeeper = {
   release(): Promise<void>
   /** Signale qu'un brouillon a été relu : `release` devra l'effacer. */
   adopt(): void
+  /** Efface le brouillon relu au montage, même si ce gardien ne l'a pas écrit (`release` ne supprime que ce qu'il a écrit ou adopté). */
+  discard(): Promise<void>
 }
 
 export function createDraftKeeper(storage: Pick<StorageApi, 'get' | 'set' | 'delete'>, timers: Timers, delayMs = DRAFT_DEBOUNCE_MS): DraftKeeper {
@@ -131,6 +133,14 @@ export function createDraftKeeper(storage: Pick<StorageApi, 'get' | 'set' | 'del
 
     adopt() {
       present = true
+    },
+
+    discard() {
+      cancelTimer()
+      snapshot = null
+      present = false
+      enqueue(() => storage.delete(STORAGE_KEY))
+      return chain
     },
   }
 }

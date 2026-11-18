@@ -16,7 +16,7 @@ test('an error shows its message with a retry action', () => {
 })
 
 test('a missing file reads differently for the default and a custom path', () => {
-  assert.equal(describeFooter({ ...idle, missing: true }, true).label, 'File was deleted: type, then choose Keep mine to recreate it')
+  assert.equal(describeFooter({ ...idle, missing: true }, true).label, 'File was deleted: editing recreates it (choose Keep mine if asked)')
   assert.equal(describeFooter({ ...idle, missing: true }, false).label, 'File not found')
 })
 

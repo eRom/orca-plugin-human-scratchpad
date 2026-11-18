@@ -23,7 +23,7 @@ function describeFooter(state, isDefault) {
   if (state.status === "error" && state.error)
     return { dot: "error", label: state.error.message, retry: true };
   if (state.missing && state.status === "saved") {
-    const label = isDefault ? "File was deleted: type, then choose Keep mine to recreate it" : "File not found";
+    const label = isDefault ? "File was deleted: editing recreates it (choose Keep mine if asked)" : "File not found";
     return { dot: "missing", label, retry: false };
   }
   if (state.status === "pending" && state.conflict)
@@ -209,6 +209,13 @@ function createDraftKeeper(storage, timers, delayMs = DRAFT_DEBOUNCE_MS) {
     },
     adopt() {
       present = true;
+    },
+    discard() {
+      cancelTimer();
+      snapshot = null;
+      present = false;
+      enqueue(() => storage.delete(STORAGE_KEY));
+      return chain;
     }
   };
 }
@@ -27338,7 +27345,7 @@ async function switchOnce() {
     return;
   const decision = decideMount(draft, resolved.path, read);
   if (decision.kind === "disk" && decision.clearDraft)
-    draftKeeper.release();
+    draftKeeper.discard();
   const text = decision.kind === "resume" ? decision.text : read.content;
   if (editor)
     editor.replaceAll(text);
@@ -27382,5 +27389,5 @@ orca.settings.onDidChange(({ key }) => {
 });
 switchFile().then(nextFrames).finally(() => chrome2.reveal());
 
-//# debugId=D9A11550CE6D318264756E2164756E21
+//# debugId=B47922D7EC6C9F3264756E2164756E21
 //# sourceMappingURL=panel.js.map
