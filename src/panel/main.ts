@@ -63,7 +63,7 @@ renderToolbar(chrome.toolbarHost, (command) => {
   editor.applyFormatResult(applyFormat(command, text, from, to))
 })
 
-const isDirty =(): boolean => (editor?.getText() ?? '') !== cleanText
+const isDirty = (): boolean => (editor?.getText() ?? '') !== cleanText
 const currentBlock = (state: SyncState) => switchBlock(state, isDirty())
 
 // La taille affichée suit le texte, y compris après une frappe ou un ajout externe.

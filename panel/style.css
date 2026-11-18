@@ -75,21 +75,34 @@ body.booting #app {
   background: color-mix(in srgb, var(--orca-background) 84%, transparent);
 }
 
+/* Le trait de tête d'un groupe est hors flux : sa présence ne change jamais la largeur du groupe, donc ne peut
+   pas modifier la coupure de ligne (masquer un trait en flux rétrécit le groupe, qui revient alors sur la ligne
+   précédente). Le trait occupe l'espace entre deux groupes : 6 px d'écart + 7 px de marge droite = 13 px, comme
+   gap 6 + trait 1 + gap 6 dans Orca. */
 .toolbar-group {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
+  margin-right: 7px;
+}
+
+.toolbar-group:last-child {
+  margin-right: 0;
 }
 
 /* Un groupe passé à la ligne n'a plus de trait de tête. */
 .toolbar-group[data-wrapped] > .toolbar-separator {
-  display: none;
+  visibility: hidden;
 }
 
 .toolbar-separator {
-  flex: none;
+  position: absolute;
+  left: -7px;
+  top: 50%;
   width: 1px;
   height: 18px;
+  margin-top: -9px;
   background: color-mix(in srgb, var(--orca-border) 72%, transparent);
 }
 
@@ -129,7 +142,7 @@ body.booting #app {
   max-width: calc(100vw - 8px);
   padding: 6px 12px;
   box-sizing: border-box;
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--orca-foreground);
   color: var(--orca-background);
   font-size: 12px;
